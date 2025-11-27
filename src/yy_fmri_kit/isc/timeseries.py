@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from yy_fmri_kit.static.isc.config import ISCConfig
-from yy_fmri_kit.helpers.find_files import (
+from yy_fmri_kit.io.find_files import (
     iter_subject_denoised,
     iter_subjects,
 )

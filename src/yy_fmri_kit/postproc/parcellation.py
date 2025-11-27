@@ -16,8 +16,8 @@ try:
     from templateflow import api as tf_api
 except Exception:
     tf_api = None
-from yy_fmri_kit.helpers.find_files import iter_subject_denoised, get_session_from_path, iter_subjects
-from yy_fmri_kit.helpers.preproc.atlas_resolver import _resolve_atlas_and_labels
+from yy_fmri_kit.io.find_files import iter_subject_denoised, get_session_from_path, iter_subjects
+from yy_fmri_kit.postproc.atlas_resolver import _resolve_atlas_and_labels
 
 
 # ==== Main function to parcellate one functional image ====

@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 import pandas as pd
-from yy_fmri_kit.static.preproc.config import HEUDICONV_CMD_TEMPLATE, BIDS_VALIDATOR_CMD_TEMPLATE
+from yy_fmri_kit.static.io.config import HEUDICONV_CMD_TEMPLATE, BIDS_VALIDATOR_CMD_TEMPLATE
 
 # -------------------------------------- 1 --------------------------------------
 def get_dicom_info(

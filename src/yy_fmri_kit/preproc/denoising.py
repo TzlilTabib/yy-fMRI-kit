@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from nltools.data import Brain_Data, Design_Matrix
 from nltools.stats import regress, zscore
-from yy_fmri_kit.helpers.find_files import iter_subjects, _iter_subject_func_runs
+from yy_fmri_kit.io.find_files import iter_subjects, _iter_subject_func_runs
 
 __all__ = ["make_motion_covariates", "run_nltools_denoising"]
 

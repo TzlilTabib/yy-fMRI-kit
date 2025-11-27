@@ -31,8 +31,7 @@ import nibabel as nib
 import csv
 from templateflow.api import get
 
-from yy_fmri_kit.helpers.find_files import iter_subjects, iter_subject_denoised
-from yy_fmri_kit.helpers.preproc.atlas_resolver import _resolve_atlas_and_labels
+from yy_fmri_kit.io.find_files import iter_subjects, iter_subject_denoised
 
 # Type aliases
 Array1D = np.ndarray

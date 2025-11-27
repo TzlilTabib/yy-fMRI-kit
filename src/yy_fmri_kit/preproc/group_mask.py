@@ -12,7 +12,7 @@ try:
 except ImportError as e:
     tf_get = None
 
-from yy_fmri_kit.helpers.find_files import build_subject_runs_dict, iter_subjects, find_brain_mask
+from yy_fmri_kit.io.find_files import build_subject_runs_dict, iter_subjects, find_brain_mask
 
 # === Load standard-space group mask from TemplateFlow ===
 def load_MNI_mask(
