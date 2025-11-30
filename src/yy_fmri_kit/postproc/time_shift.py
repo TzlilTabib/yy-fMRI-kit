@@ -415,10 +415,8 @@ def build_denoised_runs_dict(
                 iter_subject_denoised(
                     derivatives_dir=root,
                     sub=sub,
-                    denoise_folder=denoise_folder,
                     space=space,
-                    desc_keywords=desc_keywords,
-                    suffix=suffix,
+                    desc_keywords=desc_keywords
                 )
             )
         except FileNotFoundError:

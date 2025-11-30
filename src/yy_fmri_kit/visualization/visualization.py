@@ -4,9 +4,14 @@
 
 import numpy as np
 from pathlib import Path
-from nilearn import image, plotting
+from typing import Optional, Sequence, Union
+from nilearn import image, plotting, datasets
 import nibabel as nib
 import matplotlib.pyplot as plt
+
+# =====================================================
+# Visualizing QC - before and after denoising
+# =====================================================
 
 def plot_single_voxel_timeseries(pre_bold, post_bold,
                                  ijk=None,
@@ -151,4 +156,65 @@ def get_matching_denoised(pre_bold_path: Path, denoised_root: Path) -> Path:
     return den_subdir / pre_bold_path.name.replace(
         "_bold.nii.gz",
         "_desc-nltoolsClean_bold.nii.gz"
+    )
+
+# =====================================================
+# Visualizing ISC on MNI brain
+# =====================================================
+
+PathLike = Union[str, Path]
+
+def plot_stat_niimg(
+    img: PathLike | nib.Nifti1Image,
+    *,
+    bg_img: PathLike | nib.Nifti1Image | None = None,
+    title: str = "",
+    percentile: Optional[float] = 75.0,
+    display_mode: str = "mosaic",
+    cut_coords: int | Sequence[int] = 10,
+    black_bg: bool = False,
+):
+    """
+    Convenience wrapper for plotting any 3D stat NIfTI (parcelwise or voxelwise).
+
+    Parameters
+    ----------
+    img : path or Nifti1Image
+        3D image with statistic values (e.g., ISC, ΔISC).
+    bg_img : path or Nifti1Image or None
+        Background anatomical image. If None, uses default MNI template.
+    title : str
+        Plot title.
+    percentile : float or None
+        If not None, compute threshold as this percentile of non-zero voxels.
+        If None, use threshold=0.
+    display_mode, cut_coords :
+        Passed to nilearn.plotting.plot_stat_map.
+    """
+    if isinstance(img, nib.spatialimages.SpatialImage):
+        stat_img = img
+    else:
+        stat_img = nib.load(str(img))
+    
+    if bg_img is None:
+        bg_img = datasets.load_mni152_template()
+    elif not isinstance(bg_img, nib.spatialimages.SpatialImage):
+        bg_img = nib.load(str(bg_img))
+
+    data = stat_img.get_fdata()
+    nonzero = data[np.isfinite(data) & (data != 0)]
+
+    if percentile is not None and nonzero.size > 0:
+        thr = np.percentile(nonzero, percentile)
+    else:
+        thr = 0.0
+
+    plotting.plot_stat_map(
+        stat_img,
+        threshold=thr,
+        bg_img=bg_img,
+        display_mode=display_mode,
+        cut_coords=cut_coords,
+        title=title,
+        black_bg=black_bg
     )

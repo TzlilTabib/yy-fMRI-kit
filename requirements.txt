@@ -97,4 +97,4 @@ universal_pathlib==0.3.6
 urllib3==2.5.0
 wcwidth==0.2.14
 wrapt==2.0.1
--e git+https://github.com/TzlilTabib/yy-fMRI-kit.git@6fa8b6ad773f08f65486558c2b5b3c08ec438076#egg=yy_fmri_kit
+-e git+https://github.com/TzlilTabib/yy-fMRI-kit.git@main#egg=yy_fmri_kit
