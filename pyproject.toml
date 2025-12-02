@@ -37,6 +37,7 @@ where = ["src"]
 
 [project.scripts]
 yy_fmri_kit = "yy_fmri_kit.cli:app"
+"yy-fmri-kit" = "yy_fmri_kit.cli:main"
 
 [tool.ty]
 # All rules are enabled as "error" by default; no need to specify unless overriding.
