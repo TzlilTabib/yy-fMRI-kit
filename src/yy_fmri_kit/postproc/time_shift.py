@@ -23,15 +23,12 @@ Then run your usual parcellation on the timeshifted files.
 """
 
 from __future__ import annotations
-import pandas as pd
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import nibabel as nib
-import csv
-from templateflow.api import get
 
-from yy_fmri_kit.io.find_files import iter_subjects, iter_subject_denoised
+from yy_fmri_kit.io.find_files import build_denoised_runs_dict
 
 # Type aliases
 Array1D = np.ndarray
@@ -39,7 +36,7 @@ ArrayLike = np.ndarray
 PathLike = Union[str, Path]
 
 # ================================================================
-# DEFAULT AUDITORY ROI MASK (MNI T1 
+# DEFAULT AUDITORY ROI MASK (MNI SPACE) 
 # ================================================================
 
 def build_default_auditory_roi(
@@ -363,74 +360,9 @@ def apply_lags_to_nifti_dict(
 
     return shifted_cropped, T_aligned
 
-
 # ================================================================
-# 2) GLUE TO YOUR FIND_FILES MODULE
+# 2) GLUE HELPER TO ESTIMATE N RUNS ACROSS SUBJECTS
 # ================================================================
-
-def build_denoised_runs_dict(
-    derivatives_dir: PathLike,
-    *,
-    denoise_folder: str = "",  # if your denoised_dir already points at /denoised, leave empty
-    space: str = "MNI152NLin2009cAsym",
-    desc_keywords: Sequence[str] = ("denoised", "clean", "nltoolsClean", "preproc"),
-    suffix: str = "bold",
-    subjects: Optional[Sequence[str]] = None,
-) -> Dict[str, List[Path]]:
-    """
-    Build a dict {sub: [run1, run2, ...]} of denoised 4D runs for each subject.
-
-    This wraps your existing iter_subjects + iter_subject_denoised.
-
-    Parameters
-    ----------
-    derivatives_dir : path-like
-        Root derivatives folder that contains the denoised data.
-        If denoise_folder is non-empty, we look under derivatives_dir / denoise_folder.
-    denoise_folder : str
-        Optional subfolder under derivatives_dir (e.g., 'denoised').
-        If empty, derivatives_dir is used as-is.
-    space, desc_keywords, suffix : see iter_subject_denoised docstring.
-    subjects : optional sequence of subject IDs (e.g. ["sub-01", "sub-02"]).
-        If None, subjects are inferred via iter_subjects().
-
-    Returns
-    -------
-    subject_runs : dict
-        {sub: [Path, Path, ...]} sorted paths per subject.
-    """
-    derivatives_dir = Path(derivatives_dir).resolve()
-    if denoise_folder:
-        root = derivatives_dir / denoise_folder
-    else:
-        root = derivatives_dir
-
-    if subjects is None:
-        subjects = iter_subjects(root)
-
-    subject_runs: Dict[str, List[Path]] = {}
-    for sub in subjects:
-        try:
-            runs = list(
-                iter_subject_denoised(
-                    derivatives_dir=root,
-                    sub=sub,
-                    space=space,
-                    desc_keywords=desc_keywords
-                )
-            )
-        except FileNotFoundError:
-            print(f"⚠️ No func folder found for {sub} in {root}")
-            continue
-
-        if len(runs) == 0:
-            print(f"⚠️ No denoised runs found for {sub}")
-            continue
-
-        subject_runs[sub] = sorted(runs)
-
-    return subject_runs
-
 
 def _infer_common_run_count(subject_runs: Dict[str, List[Path]]) -> int:
     """

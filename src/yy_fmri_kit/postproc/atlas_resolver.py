@@ -6,13 +6,21 @@ try:
 except Exception:
     tf_api = None
 
+# ================================================================
+# LOW LEVEL HELPERS
+# ================================================================
+
 def _as_path_one(p: Union[str, Path, Sequence[Union[str, Path]]]) -> Path:
     # TemplateFlow may return a single path or a list; take the first if list-like
     if isinstance(p, (list, tuple)):
         return Path(str(p[0]))
     return Path(str(p))
 
-def _resolve_atlas_and_labels(
+# ================================================================
+# ATLAS RESOLVER USING TEMPLATEFLOW - FOR PARCELLATION
+# ================================================================
+
+def resolve_atlas_and_labels(
     atlas_nii: Optional[Path],
     labels_file: Optional[Path],
     tf_template: Optional[str],

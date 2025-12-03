@@ -1,7 +1,5 @@
 """Console script for yy_fmri_kit."""
 
-from rich.console import Console
-from pathlib import Path
 import subprocess
 import os
 import sys

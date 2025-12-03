@@ -1,7 +1,13 @@
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Union
 import re
-# ---------- Find subjects and their runs ----------
+PathLike = Union[str, Path]
+
+
+# ==================================================================
+# Find fMRIPrep preprocessed subjects, functional runs
+# ==================================================================
+
 def iter_subjects(fmriprep_root: Path | str) -> list[str]:
     """
     Return a sorted list of all subject IDs in the fMRIPrep folder.
@@ -141,7 +147,72 @@ def iter_subject_denoised(
 
     return sorted(good)
 
-# Extract subject and session from path ----------
+def build_denoised_runs_dict(
+    derivatives_dir: PathLike,
+    *,
+    denoise_folder: str = "",  # if your denoised_dir already points at /denoised, leave empty
+    space: str = "MNI152NLin2009cAsym",
+    desc_keywords: Sequence[str] = ("denoised", "clean", "nltoolsClean", "preproc"),
+    subjects: Optional[Sequence[str]] = None,
+) -> Dict[str, List[Path]]:
+    """
+    Build a dict {sub: [run1, run2, ...]} of denoised 4D runs for each subject.
+
+    This wraps your existing iter_subjects + iter_subject_denoised.
+
+    Parameters
+    ----------
+    derivatives_dir : path-like
+        Root derivatives folder that contains the denoised data.
+        If denoise_folder is non-empty, we look under derivatives_dir / denoise_folder.
+    denoise_folder : str
+        Optional subfolder under derivatives_dir (e.g., 'denoised').
+        If empty, derivatives_dir is used as-is.
+    space, desc_keywords, suffix : see iter_subject_denoised docstring.
+    subjects : optional sequence of subject IDs (e.g. ["sub-01", "sub-02"]).
+        If None, subjects are inferred via iter_subjects().
+
+    Returns
+    -------
+    subject_runs : dict
+        {sub: [Path, Path, ...]} sorted paths per subject.
+    """
+    derivatives_dir = Path(derivatives_dir).resolve()
+    if denoise_folder:
+        root = derivatives_dir / denoise_folder
+    else:
+        root = derivatives_dir
+
+    if subjects is None:
+        subjects = iter_subjects(root)
+
+    subject_runs: Dict[str, List[Path]] = {}
+    for sub in subjects:
+        try:
+            runs = list(
+                iter_subject_denoised(
+                    derivatives_dir=root,
+                    sub=sub,
+                    space=space,
+                    desc_keywords=desc_keywords
+                )
+            )
+        except FileNotFoundError:
+            print(f"⚠️ No func folder found for {sub} in {root}")
+            continue
+
+        if len(runs) == 0:
+            print(f"⚠️ No denoised runs found for {sub}")
+            continue
+
+        subject_runs[sub] = sorted(runs)
+
+    return subject_runs
+
+# ==================================================================
+# Helpers to extract 'sub-*' and 'ses-*' from paths
+# ==================================================================
+
 _SES_RE = re.compile(r"^ses-[^/]+$")
 _SUB_RE = re.compile(r"^sub-[^/]+$")
 
