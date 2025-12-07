@@ -29,6 +29,7 @@ import numpy as np
 import nibabel as nib
 
 from yy_fmri_kit.io.find_files import build_denoised_runs_dict
+from yy_fmri_kit.visualization.timeshift import get_task_from_bold_path, plot_hrf_for_run
 
 # Type aliases
 Array1D = np.ndarray
@@ -572,3 +573,150 @@ def time_shift_all_denoised(
             shifted_paths[run_idx][sid] = out_path
 
     return shifted_paths, lag_info_all
+
+
+# ================================================================
+# TIME SHIFTING USING THE FIRST AUDITORY PEAK (ALTERNATIVE)
+# ================================================================
+
+from scipy.signal import find_peaks
+import pandas as pd
+
+def find_first_hrf_peak(
+    ts: np.ndarray,
+    TR: float,
+    onset_sec: float,
+    search_window: tuple[float, float] = (0.0, 10.0),
+    min_prominence: float = 0.3,
+    zscore: bool = True,
+) -> dict:
+    """
+    Find the first HRF peak after a known stimulus onset in an ROI timecourse.
+
+    Returns dict with:
+      - peak_time_sec    : time of first peak (sec, from scanner trigger)
+      - peak_latency_sec : time after onset (sec)
+      - peak_value       : value at the peak (z-score if zscore=True)
+      - peak_index       : index in the original ts
+    """
+    ts = np.asarray(ts, dtype=float)
+
+    if zscore:
+        ts = (ts - ts.mean()) / ts.std()
+
+    T = len(ts)
+    time = np.arange(T) * TR
+
+    # Absolute search window [onset+2, onset+10] by default
+    t_start = onset_sec + search_window[0]
+    t_end   = onset_sec + search_window[1]
+
+    idx_start = np.searchsorted(time, t_start)
+    idx_end   = np.searchsorted(time, t_end)
+
+    if idx_start >= T or idx_start >= idx_end:
+        raise ValueError("Search window is outside the timecourse.")
+
+    ts_window = ts[idx_start:idx_end]
+    time_window = time[idx_start:idx_end]
+
+    # detect peaks
+    peaks, props = find_peaks(ts_window, prominence=min_prominence)
+
+    if len(peaks) == 0:
+        # fall back to max in window
+        local_idx = int(np.argmax(ts_window))
+        peak_idx = idx_start + local_idx
+    else:
+        local_idx = int(peaks[0])       # earliest peak
+        peak_idx = idx_start + local_idx
+
+    peak_time_sec = float(time[peak_idx])
+    peak_latency = float(peak_time_sec - onset_sec)
+    peak_value = float(ts[peak_idx])
+
+    return {
+        "peak_time_sec": peak_time_sec,
+        "peak_latency_sec": peak_latency,
+        "peak_value": peak_value,
+        "peak_index": int(peak_idx),
+    }
+
+def analyze_auditory_hrf_all_runs(
+    derivatives_dir: str | Path,
+    mask_path: str | Path,
+    TR: float,
+    denoise_folder: str = "",
+    onset_sec: float = 8.0,
+    subjects: list[str] | None = None,
+    save_png: Path | None = None,
+    save_csv: Path | None = None,
+) -> pd.DataFrame:
+    """
+    For all subjects/runs:
+      - extract auditory ROI timecourse
+      - find first HRF peak after onset
+      - optionally save HRF plots
+      - return and optionally save a CSV summary of peaks
+    """
+    derivatives_dir = Path(derivatives_dir).resolve()
+    mask_path = Path(mask_path).resolve()
+
+    subject_runs = build_denoised_runs_dict(
+        derivatives_dir,
+        denoise_folder=denoise_folder,
+        subjects=subjects,
+    )
+
+    if save_png is not None:
+        save_png = Path(save_png)
+        save_png.mkdir(parents=True, exist_ok=True)
+
+    rows: list[dict] = []
+
+    for sub, runs in subject_runs.items():
+        for bold_path in runs:
+            task = get_task_from_bold_path(bold_path) or "unknownTask"
+            title = f"{sub} – {task}\n{bold_path.name}"
+            print(f"Analyzing {title}")
+
+            safe_sub = sub.replace(" ", "_")
+            safe_task = task.replace(" ", "_")
+            save_name = f"{safe_sub}_{safe_task}.png" if save_png is not None else None
+
+            peak_info = plot_hrf_for_run(
+                bold_path=bold_path,
+                mask_path=mask_path,
+                TR=TR,
+                onset_sec=onset_sec,
+                zscore=True,
+                title=title,
+                save_dir=save_png,
+                save_name=save_name,
+                show=(save_png is None),
+                mark_peak=True,
+            )
+
+            if peak_info is None:
+                continue
+
+            rows.append(
+                dict(
+                    sub=sub,
+                    task=task,
+                    bold_path=str(bold_path),
+                    peak_time_sec=peak_info["peak_time_sec"],
+                    peak_latency_sec=peak_info["peak_latency_sec"],
+                    peak_value=peak_info["peak_value"],
+                )
+            )
+
+    df = pd.DataFrame(rows)
+
+    if save_csv is not None:
+        save_csv = Path(save_csv)
+        save_csv.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(save_csv, index=False)
+        print(f"Saved peak summary to {save_csv}")
+
+    return df
