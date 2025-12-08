@@ -17,7 +17,7 @@ try:
 except Exception:
     tf_api = None
 from yy_fmri_kit.io.find_files import iter_subject_denoised, get_session_from_path, iter_subjects
-from yy_fmri_kit.postproc.atlas_resolver import _resolve_atlas_and_labels
+from yy_fmri_kit.postproc.atlas_resolver import resolve_atlas_and_labels
 
 
 # ==== Main function to parcellate one functional image ====
@@ -47,7 +47,7 @@ def parcellate(
     func_img = nib.load(str(func_nii))
 
     # Resolve atlas paths (local or TemplateFlow)
-    atlas_path, labels_path = _resolve_atlas_and_labels(
+    atlas_path, labels_path = resolve_atlas_and_labels(
         atlas_nii=atlas_nii,
         labels_file=labels_file,
         tf_template=tf_template,
@@ -123,7 +123,7 @@ def parcellate_subject(
         raise FileNotFoundError(f"No runs found for {sub} in {derivatives_dir} (space={space}, desc={desc}).")
 
     # Resolve atlas+labels once (works with local paths or TemplateFlow)
-    atlas_path, labels_path = _resolve_atlas_and_labels(
+    atlas_path, labels_path = resolve_atlas_and_labels(
         atlas_nii=atlas_nii,
         labels_file=labels_file,
         tf_template=tf_template,

@@ -6,7 +6,7 @@ import pandas as pd
 
 from yy_fmri_kit.static.isc.config import ISCConfig
 from yy_fmri_kit.isc.compute import compute_isc
-from yy_fmri_kit.postproc.parcellation import _resolve_atlas_and_labels
+from yy_fmri_kit.postproc.atlas_resolver import resolve_atlas_and_labels
 
 # ================================================================
 #  PARCELWISE ISC MAIN HELPER FUNCTION
@@ -52,7 +52,7 @@ def run_parcelwise_isc(
 
     # 3) Get labels if not provided
     if parcel_labels is None:
-        atlas_nii, labels_path = _resolve_atlas_and_labels(
+        atlas_nii, labels_path = resolve_atlas_and_labels(
             atlas_nii=config.atlas_nii,
             labels_file=config.labels_file,
             tf_template=config.tf_template,
@@ -63,7 +63,7 @@ def run_parcelwise_isc(
         )
         if labels_path is None:
             raise RuntimeError(
-                "_resolve_atlas_and_labels did not return a labels_file. "
+                "resolve_atlas_and_labels did not return a labels_file. "
                 "Pass labels_file or valid TemplateFlow params in ISCConfig."
             )
         parcel_labels = pd.read_csv(labels_path, sep="\t")
