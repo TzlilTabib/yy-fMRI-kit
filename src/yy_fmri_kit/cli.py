@@ -75,3 +75,9 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+def app() -> None:
+    """
+    Backward-compatible entry point for the console script.
+    """
+    main()
