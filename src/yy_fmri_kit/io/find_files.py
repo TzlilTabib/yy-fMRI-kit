@@ -71,6 +71,48 @@ def build_subject_runs_dict(fmriprep_root: Path | str) -> dict[str, list[Path]]:
 
     return subject_runs
 
+
+def build_runs_dict_generic(
+    root: PathLike,
+    subject_glob: str = "sub-*",
+    bold_glob: str = "**/*_bold.nii.gz",
+) -> Dict[str, List[Path]]:
+    """
+    Build a dict of subject -> list of BOLD runs from an arbitrary derivatives root.
+
+    Parameters
+    ----------
+    root : directory that contains sub-* folders
+    subject_glob : pattern to find subject folders (default "sub-*")
+    bold_glob : recursive glob under each subject folder to find bold files.
+                Examples:
+                    "**/*_bold.nii.gz"
+                    "**/*desc-preproc_bold.nii.gz"
+                    "**/*desc-nltoolsClean_bold.nii.gz"
+
+    Returns
+    -------
+    subject_runs : dict[sub_id -> list[Path]]
+    """
+    root = Path(root).resolve()
+    subject_runs: Dict[str, List[Path]] = {}
+
+    # find all subjects under this root
+    for sub_dir in sorted(root.glob(subject_glob)):
+        if not sub_dir.is_dir():
+            continue
+
+        sub_id = sub_dir.name  # e.g. "sub-1"
+        runs = sorted(sub_dir.rglob(bold_glob))  # recursive search
+
+        if not runs:
+            print(f"⚠️ Warning: No functional runs found for {sub_id} under {sub_dir}")
+            continue
+
+        subject_runs[sub_id] = runs
+
+    return subject_runs
+
 # ---------- Find brain mask (first subject)----------
 def find_brain_mask(fmriprep_root: Path | str, sub: str = None) -> Path:
     """
