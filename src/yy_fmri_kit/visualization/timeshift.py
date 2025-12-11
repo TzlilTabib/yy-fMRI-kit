@@ -5,7 +5,7 @@ import nibabel as nib
 import numpy as np
 
 from yy_fmri_kit.io.find_files import build_denoised_runs_dict
-from yy_fmri_kit.postproc.time_shift import find_first_hrf_peak
+from yy_fmri_kit.postproc.timeshift_core import find_first_hrf_peak, get_task_from_bold_path
 
 def plot_hrf_for_run(
     bold_path: Path,
@@ -168,19 +168,3 @@ def mean_ts_in_mask(bold_path: Path, mask_path: Path) -> np.ndarray:
     masked_data = bold_2d[mask_1d]            # (V_mask, T)
     ts = masked_data.mean(axis=0)             # (T,)
     return ts
-
-
-# ---------- Extract task name from filename ----------
-
-_TASK_RE = re.compile(r"task-([a-zA-Z0-9]+)")
-
-def get_task_from_bold_path(p: Path) -> str | None:
-    """
-    Try to infer the task label from a BOLD filename, e.g.
-    'sub-01_ses-202505251228_task-ProLeft_space-..._bold.nii.gz'
-    -> 'ProLeft'
-    """
-    m = _TASK_RE.search(p.name)
-    if m:
-        return m.group(1)
-    return None
