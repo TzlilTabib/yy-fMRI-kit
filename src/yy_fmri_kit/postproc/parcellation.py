@@ -230,7 +230,27 @@ def _read_labels_aligned(atlas_img: nib.Nifti1Image, labels_file: Optional[Path]
 
     if not labels_file or not Path(labels_file).exists():
         return [f"parcel-{i:03d}" for i in range(len(ids))]
+    
+    # --- AAL-style txt: lines like "1 Precentral_L" (sometimes with tabs/spaces) ---
+    if labels_file.suffix.lower() == ".txt":
+        mapping: dict[int, str] = {}
+        with open(labels_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = re.split(r"\s+", line)
+                if len(parts) < 2:
+                    continue
+                try:
+                    idx = int(parts[0])
+                except ValueError:
+                    continue
+                name = parts[1]
+                mapping[idx] = name
+        return [mapping.get(int(i), f"parcel-{int(i):03d}") for i in ids]
 
+    # --- TSV/CSV-style labels ---
     sep = "\t" if str(labels_file).lower().endswith(".tsv") else ","
     df = pd.read_csv(labels_file, sep=sep)
 
@@ -252,7 +272,106 @@ def _read_labels_aligned(atlas_img: nib.Nifti1Image, labels_file: Optional[Path]
     # Final fallback
     return [f"parcel-{i:03d}" for i in range(len(ids))]
 
+# ==== Combine Schaefer + Tian parcellations into one NIfTI ====
+# TODO: still in development/testing
+def build_schaefer400_tianS3_combined_nifti(
+    *,
+    out_dir: Path,
+    tian_s3_dseg_nii: Path,
+    tian_s3_labels_file: Path | None = None,
+    tf_template: str = "MNI152NLin2009cAsym",
+    tf_atlas: str = "Schaefer2018",
+    tf_desc: str = "400Parcels7Networks",
+    tf_resolution: int | None = 2,
+    schaefer_offset: int = 400,
+) -> tuple[Path, Path]:
+    """
+    Returns:
+      combined_atlas_nii, combined_labels_tsv
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 1) fetch Schaefer NIfTI dseg + labels via your resolver
+    sch_nii, sch_lbl = resolve_atlas_and_labels(
+        atlas_nii=None,
+        labels_file=None,
+        tf_template=tf_template,
+        tf_atlas=tf_atlas,
+        tf_desc=tf_desc,
+        tf_resolution=tf_resolution,
+        suffix="dseg",  # IMPORTANT: volumetric label image
+    )
+    sch_img = nib.load(str(sch_nii))
+    ti_img = nib.load(str(tian_s3_dseg_nii))
+
+    # 2) put Tian on Schaefer grid
+    if ti_img.shape[:3] != sch_img.shape[:3] or not np.allclose(ti_img.affine, sch_img.affine):
+        ti_img = resample_to_img(ti_img, sch_img, interpolation="nearest")
+
+    sch = sch_img.get_fdata().astype(int)
+    ti = ti_img.get_fdata().astype(int)
+
+    # 3) merge: keep cortex labels, fill empty voxels with subcortex (+offset)
+    combined = sch.copy()
+    fill = (combined == 0) & (ti > 0)
+    combined[fill] = ti[fill] + schaefer_offset
+
+    combined_nii = out_dir / f"{tf_atlas}_tf_{tf_resolution}mm_{tf_desc}_plus_TianS3.dseg.nii.gz"
+    nib.save(nib.Nifti1Image(combined.astype(np.int32), sch_img.affine, sch_img.header), str(combined_nii))
+
+    # 4) build combined labels TSV
+    sch_df = _load_labels_any(sch_lbl)
+    # enforce Schaefer IDs 1..400 if not present
+    if "id" not in sch_df.columns:
+        sch_df["id"] = np.arange(1, len(sch_df) + 1)
+    sch_df = sch_df[["id", "name"]].copy()
+
+    if tian_s3_labels_file is not None and Path(tian_s3_labels_file).exists():
+        ti_df = _load_labels_any(tian_s3_labels_file)
+        if "id" not in ti_df.columns:
+            ti_df["id"] = np.arange(1, len(ti_df) + 1)
+        ti_df = ti_df[["id", "name"]].copy()
+        ti_df["id"] = ti_df["id"].astype(int) + schaefer_offset
+    else:
+        # fallback: make generic names from what exists in Tian volume
+        ti_ids = np.unique(ti[ti > 0])
+        ti_df = pd.DataFrame({
+            "id": (ti_ids + schaefer_offset).astype(int),
+            "name": [f"TianS3-{int(i)}" for i in ti_ids],
+        })
+
+    combined_labels = pd.concat([sch_df, ti_df], ignore_index=True)
+    combined_tsv = out_dir / "Schaefer2018_400Parcels7Networks_plus_TianS3_labels.tsv"
+    combined_labels.to_csv(combined_tsv, sep="\t", index=False)
+
+    return combined_nii, combined_tsv
+
+
+def _load_labels_any(path: str | Path) -> pd.DataFrame:
+    path = Path(path)
+    # try tsv/csv first
+    if path.suffix.lower() == ".tsv":
+        df = pd.read_csv(path, sep="\t")
+    else:
+        df = pd.read_csv(path)
+    # normalize column names
+    df.columns = [c.strip().lower() for c in df.columns]
+    # common cases
+    rename = {}
+    if "index" in df.columns and "id" not in df.columns:
+        rename["index"] = "id"
+    if "label" in df.columns and "name" not in df.columns:
+        rename["label"] = "name"
+    if "region" in df.columns and "name" not in df.columns:
+        rename["region"] = "name"
+    df = df.rename(columns=rename)
+    if "name" not in df.columns:
+        # try the first non-id column as name
+        non_id = [c for c in df.columns if c != "id"]
+        if non_id:
+            df = df.rename(columns={non_id[0]: "name"})
+    return df
 
 
 
