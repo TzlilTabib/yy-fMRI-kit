@@ -1,6 +1,10 @@
 import numpy as np
 from pathlib import Path
 from typing import Optional, Sequence, Tuple, Union
+import nibabel as nib
+import re
+import pandas as pd
+
 try:
     from templateflow import api as tf_api
 except Exception:
@@ -79,3 +83,52 @@ def resolve_atlas_and_labels(
         "No atlas found. Provide either local paths (atlas_nii/labels_file) "
         "or TemplateFlow params (tf_template, tf_atlas, tf_desc, tf_resolution)."
     )
+
+def _read_labels_aligned(atlas_img: nib.Nifti1Image, labels_file: Optional[Path]) -> Optional[Sequence[str]]:
+    """Read labels and align them to integer IDs present in atlas_img; fallback to generic names."""
+    ids = np.unique(atlas_img.get_fdata().astype(int))
+    ids = ids[ids > 0]
+
+    if not labels_file or not Path(labels_file).exists():
+        return [f"parcel-{i:03d}" for i in range(len(ids))]
+    
+    # --- AAL-style txt: lines like "1 Precentral_L" (sometimes with tabs/spaces) ---
+    if labels_file.suffix.lower() == ".txt":
+        mapping: dict[int, str] = {}
+        with open(labels_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = re.split(r"\s+", line)
+                if len(parts) < 2:
+                    continue
+                try:
+                    idx = int(parts[0])
+                except ValueError:
+                    continue
+                name = parts[1]
+                mapping[idx] = name
+        return [mapping.get(int(i), f"parcel-{int(i):03d}") for i in ids]
+
+    # --- TSV/CSV-style labels ---
+    sep = "\t" if str(labels_file).lower().endswith(".tsv") else ","
+    df = pd.read_csv(labels_file, sep=sep)
+
+    # Try to find ID and Name columns
+    id_col_candidates = ["index", "label", "id", "ID", "Label"]
+    name_col_candidates = ["name", "label_name", "Label", "Region", "region"]
+
+    id_col = next((c for c in id_col_candidates if c in df.columns), None)
+    name_col = next((c for c in name_col_candidates if c in df.columns), None)
+
+    if id_col and name_col:
+        mapping = dict(zip(df[id_col].astype(int), df[name_col].astype(str)))
+        return [mapping.get(i, f"parcel-{i:03d}") for i in ids]
+
+    # If no explicit ID column but counts match, take a plausible name column by order
+    if name_col and len(df) == len(ids):
+        return df[name_col].astype(str).tolist()
+
+    # Final fallback
+    return [f"parcel-{i:03d}" for i in range(len(ids))]

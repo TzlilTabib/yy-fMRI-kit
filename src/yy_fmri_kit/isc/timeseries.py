@@ -117,7 +117,6 @@ def load_all_subject_roi_data(
         )
         if len(runs) == 0:
             raise RuntimeError(f"No functional runs found for subject {sub}.")
-        continue
 
         # 🟢 SIMPLE: pick the first run as a smoke test
         first_run_path = Path(runs[0]).resolve() # TODO ---- modify to include all runs
@@ -151,31 +150,27 @@ def find_parcel_timeseries_file(
     root = config.parcellation_dir / sub
     if not root.exists():
         raise FileNotFoundError(f"Parcellation dir not found: {root}")
-    
+    atlas_tag = config.tf_atlas or config.atlas_name  # TF if exists, else local
+    if atlas_tag is None:
+        raise ValueError("Need either config.tf_atlas or config.atlas_name (or atlas_nii) to find files.")
+
+    res = config.tf_resolution or config.res
     space = config.space
-    res = config.tf_resolution
-    atlas = config.tf_atlas
+    res_part = f"_res-{res}" if res is not None else ""
+
 
     if task is None:
-        # Match ANY task
-        pattern = (
-            f"{sub}_*task-*_space-{space}_res-{res}_*atlas-{atlas}_timeseries*"
-        )
+        pattern = f"{sub}_*task-*_space-{space}{res_part}_*atlas-{atlas_tag}_timeseries*"
     else:
-        # Match specific task
-        pattern = (
-            f"{sub}_*task-{task}_space-{space}_res-{res}_*atlas-{atlas}_timeseries*"
-        )
-        
+        pattern = f"{sub}_*task-{task}_space-{space}{res_part}_*atlas-{atlas_tag}_timeseries*"
+
     matches = sorted(root.glob(pattern))
     if len(matches) == 0:
         raise FileNotFoundError(f"No parcellated timeseries files found with pattern {pattern} in {root}")
     if len(matches) > 1:
-        # For now be strict; later you can handle multiple runs per task
         raise RuntimeError(
             f"Expected 1 parcellated file for {sub} (task={task}), found {len(matches)}: {matches}"
         )
-
     return matches[0]
 
 def load_parcel_timeseries(path: Path) -> np.ndarray:

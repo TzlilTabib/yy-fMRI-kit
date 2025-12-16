@@ -22,6 +22,8 @@ class ISCConfig:
     parcellation_dir: Optional[Path] = None # if different from derivatives_dir
     atlas_nii: Optional[str] = None         # e.g. "Schaefer2018_400Parcels7Networks"
     labels_file: Optional[Path] = None      # TSV/CSV with parcel names
+    atlas_name: Optional[str] = None      # e.g. "Schaefer2018"
+    res: Optional[int] = None               # e.g. 2, 4 (mm)
     tf_template: Optional[str] = None       # e.g. "MNI152NLin2009cAsym"
     tf_atlas: Optional[str] = None          # e.g. "Schaefer2018"
     tf_desc: Optional[str] = None           # e.g. "400Parcels7Networks"
@@ -41,3 +43,5 @@ class ISCConfig:
 
         if self.subjects is not None:
             self.subjects = list(self.subjects)
+        if self.atlas_name is None and self.atlas_nii is not None:
+            self.atlas_name = Path(self.atlas_nii).name.replace(".nii.gz", "").replace(".nii", "")

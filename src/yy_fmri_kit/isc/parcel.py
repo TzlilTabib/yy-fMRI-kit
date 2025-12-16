@@ -3,10 +3,11 @@ from typing import Dict, List
 
 import numpy as np
 import pandas as pd
+import nibabel as nib
 
 from yy_fmri_kit.static.isc.config import ISCConfig
 from yy_fmri_kit.isc.compute import compute_isc
-from yy_fmri_kit.postproc.atlas_resolver import resolve_atlas_and_labels
+from yy_fmri_kit.postproc.atlas_resolver import resolve_atlas_and_labels, _read_labels_aligned
 
 # ================================================================
 #  PARCELWISE ISC MAIN HELPER FUNCTION
@@ -66,8 +67,13 @@ def run_parcelwise_isc(
                 "resolve_atlas_and_labels did not return a labels_file. "
                 "Pass labels_file or valid TemplateFlow params in ISCConfig."
             )
-        parcel_labels = pd.read_csv(labels_path, sep="\t")
+        atlas_img = nib.load(str(atlas_nii))
+        labels = _read_labels_aligned(atlas_img, labels_path)
 
+        parcel_labels = pd.DataFrame({
+            "parcel": np.arange(len(labels)),
+            "parcel_label": labels,
+        })
     if len(parcel_labels) != P:
         raise ValueError(
             f"parcel_labels has length {len(parcel_labels)} but ISC has {P} parcels."
