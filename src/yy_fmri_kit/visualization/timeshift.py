@@ -81,7 +81,7 @@ def plot_hrf_for_run(
     return peak_info
 
 
-def plot_auditory_hrf_all_runs(
+def plot_hrf_all_runs(
     derivatives_dir: str | Path,
     mask_path: str | Path,
     TR: float,

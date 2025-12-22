@@ -582,8 +582,9 @@ def time_shift_all_denoised(
 
 import pandas as pd
 
-def analyze_auditory_hrf_all_runs(
+def analyze_hrf_all_runs(
     derivatives_dir: str | Path,
+    tasks: list[str] | None,
     mask_path: str | Path,
     TR: float,
     denoise_folder: str = "",
@@ -606,12 +607,13 @@ def analyze_auditory_hrf_all_runs(
             save_png / sub-XXXX / <sub>_<task>_run-XX.png
     - If save_csv is None and save_png is not None:
         CSV is saved as:
-            save_png / "auditory_hrf_peaks.csv"
+            save_png / "hrf_peaks.csv"
       Otherwise, if save_csv is given explicitly, that path is used.
     """
     derivatives_dir = Path(derivatives_dir).resolve()
     mask_path = Path(mask_path).resolve()
-
+    # run all tasks if tasks is None
+    runs_filter = None if tasks is None else set(t.lower() for t in tasks) 
     subject_runs = build_denoised_runs_dict(
         derivatives_dir,
         denoise_folder=denoise_folder,
@@ -636,6 +638,10 @@ def analyze_auditory_hrf_all_runs(
 
         for run_idx, bold_path in enumerate(runs):
             task = get_task_from_bold_path(bold_path) or "unknownTask"
+            # ---- Task filter ----
+            if runs_filter is not None and task.lower() not in runs_filter:  # NEW
+                continue  # NEW
+
             title = f"{sub} – {task}\n{bold_path.name}"
             print(f"Analyzing {title}")
 
@@ -676,7 +682,7 @@ def analyze_auditory_hrf_all_runs(
     # ---- Save CSV summary in the *parent folder* of all subjects ----
     if save_csv is None and save_root is not None:
         # parent folder of all sub-XXX directories
-        save_csv = save_root / "auditory_hrf_peaks.csv"
+        save_csv = save_root / "hrf_peaks.csv"
 
     if save_csv is not None:
         save_csv = Path(save_csv).resolve()
