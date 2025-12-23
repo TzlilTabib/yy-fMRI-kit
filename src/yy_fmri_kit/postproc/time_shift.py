@@ -588,15 +588,17 @@ def analyze_hrf_all_runs(
     mask_path: str | Path,
     TR: float,
     denoise_folder: str = "",
-    onset_sec: float = 8.0,
+    mark_onset: bool = False,
+    onset_sec: float | None = None,
+    find_peaks: bool = True,
     subjects: list[str] | None = None,
     save_png: Path | None = None,
     save_csv: Path | None = None,
 ) -> pd.DataFrame:
     """
     For all subjects/runs:
-      - extract auditory ROI timecourse
-      - find first HRF peak after onset
+      - extract ROI timecourse
+      - find first HRF peak after onset (in a 0-10 sec window from onset_sec)
       - optionally save HRF plots
       - return and optionally save a CSV summary of peaks
 
@@ -651,17 +653,20 @@ def analyze_hrf_all_runs(
             else:
                 save_name = None
 
+            find_peaks = find_peaks and (onset_sec is not None)
+            
             peak_info = plot_hrf_for_run(
                 bold_path=bold_path,
                 mask_path=mask_path,
                 TR=TR,
+                mark_onset=mark_onset,
                 onset_sec=onset_sec,
                 zscore=True,
                 title=title,
                 save_dir=sub_dir,
                 save_name=save_name,
                 show=(save_png is None),
-                mark_peak=True,
+                mark_peak=find_peaks,
             )
 
             if peak_info is None:

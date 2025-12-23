@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 import nibabel as nib
 import numpy as np
 
@@ -11,7 +12,8 @@ def plot_hrf_for_run(
     bold_path: Path,
     mask_path: Path,
     TR: float,
-    onset_sec: float = 8.0,
+    mark_onset: bool = False,
+    onset_sec: float | None = None,
     zscore: bool = True,
     title: str | None = None,
     save_dir: Path | None = None,
@@ -35,19 +37,20 @@ def plot_hrf_for_run(
     time = np.arange(n_tp) * TR
 
     peak_info = None
-    if mark_peak:
+    if mark_peak and onset_sec is not None:
         peak_info = find_first_hrf_peak(
             ts=ts,
             TR=TR,
             onset_sec=onset_sec,
-            search_window=(2.0, 10.0),
+            search_window=(0.0, 10.0),
             min_prominence=0.3,
-            zscore=False,   # already z-scored above
+            zscore=zscore,
         )
+    fig, ax = plt.subplots(figsize=(14, 4))
+    ax.plot(time, ts, label="ROI BOLD")
 
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(time, ts, label="Auditory ROI BOLD")
-    ax.axvline(onset_sec, linestyle="--", label=f"Stim onset ({onset_sec:.1f} s)")
+    if mark_onset and onset_sec is not None:
+        ax.axvline(onset_sec, linestyle="--", label=f"Stim onset ({onset_sec:.1f} s)")
 
     if peak_info is not None:
         ax.axvline(
@@ -56,6 +59,13 @@ def plot_hrf_for_run(
             label=f"Peak ({peak_info['peak_latency_sec']:.1f} s after onset)",
         )
 
+    ax.set_xlim(time[0], time[-1])
+    ax.xaxis.set_major_locator(MultipleLocator(10))  # labels every 10 sec
+    ax.xaxis.set_minor_locator(MultipleLocator(1))   # ticks every 1 sec
+
+    ax.tick_params(axis="x", which="major", length=6)
+    ax.tick_params(axis="x", which="minor", length=3)
+    
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("BOLD (z-score)" if zscore else "BOLD (a.u.)")
     if title is not None:
@@ -70,7 +80,7 @@ def plot_hrf_for_run(
         if save_name is None:
             save_name = bold_path.stem + "_auditoryHRF.png"
         out_path = save_dir / save_name
-        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        fig.savefig(out_path, dpi=300, bbox_inches="tight")
         print(f"Saved figure to {out_path}")
 
     if show:
@@ -86,7 +96,8 @@ def plot_hrf_all_runs(
     mask_path: str | Path,
     TR: float,
     denoise_folder: str = "",
-    onset_sec: float = 8.0,
+    mark_onset: bool = False,
+    onset_sec: float | None = None,
     subjects: list[str] | None = None,
     save_png: Path | None = None,
 ):
@@ -131,6 +142,7 @@ def plot_hrf_all_runs(
                 bold_path=bold_path,
                 mask_path=mask_path,
                 TR=TR,
+                mark_onset=mark_onset,
                 onset_sec=onset_sec,
                 zscore=True,
                 title=title,
