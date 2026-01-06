@@ -451,7 +451,6 @@ def time_shift_all_denoised(
         denoise_folder=denoise_folder,
         space=space,
         desc_keywords=desc_keywords,
-        suffix=suffix,
         subjects=subjects,
     )
     if not subject_runs:
@@ -497,10 +496,8 @@ def time_shift_all_denoised(
         task = get_task_from_bold_path(example_path) or "unknownTask"
 
         if task not in task_movie_len_tr:
-            raise KeyError(
-                f"Task {task!r} not found in task_movie_len_tr. "
-                f"Provide a mapping like {{'seker': 85, ...}}"
-            )
+            print(f"Skipping run {run_idx} (task={task}) not in task_movie_len_tr")
+            continue
         movie_len_tr = int(task_movie_len_tr[task])
 
         print(f"Run {run_idx}: task={task}, movie_len_tr={movie_len_tr}. Cropping using subject_delay_tr.")
