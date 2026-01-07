@@ -1,6 +1,7 @@
 # yy_fmri_kit/isc/timeseries.py
 
 from __future__ import annotations
+from operator import sub
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -108,7 +109,6 @@ def load_all_subject_roi_data(
     roi_data: Dict[str, np.ndarray] = {}
 
     for sub in subjects:
-        # 🔴 This uses YOUR helper exactly as-is
         runs = iter_subject_denoised(
             derivatives_dir=denoised_root,
             sub=sub,
@@ -131,6 +131,85 @@ def load_all_subject_roi_data(
         roi_data[sub] = ts
 
     return roi_data
+
+# ==== voxelwise ====
+
+def find_voxel_timeseries_file(
+    config: ISCConfig,
+    sub: str,
+    task: Optional[str] = None,
+    suffix: str = "bold_locked.nii.gz",
+) -> Path:
+    """
+    Locate a 4D denoised/timeshifted functional file for one subject (and optionally a task).
+
+    You MUST adapt the glob pattern to your naming, same as parcelwise.
+    """
+    root = Path(config.derivatives_dir) / sub / "func"
+    if not root.exists():
+        raise FileNotFoundError(f"Derivatives dir not found: {root}")
+
+    space = config.space
+    res = getattr(config, "res", None) or getattr(config, "tf_resolution", None)
+
+    if task is None:
+        task_part = "task-*"
+    else:
+        task_part = f"task-{task}"
+
+    if res is None:
+        res_part = "res-*"
+    else:
+        res_part = f"res-{res}"
+
+    pattern = f"{sub}_*_{task_part}_space-{space}_{res_part}_*{suffix}"
+
+    matches = sorted(root.glob(pattern))
+    if len(matches) == 0:
+        raise FileNotFoundError(f"No voxelwise 4D files found with pattern {pattern} in {root}")
+    if len(matches) > 1:
+        raise RuntimeError(f"Expected 1 voxelwise file for {sub} (task={task}), found {len(matches)}: {matches}")
+
+    return matches[0]
+
+
+def load_all_subject_voxel_imgs(
+    config: ISCConfig,
+    tasks: Optional[List[str]] = None,
+    suffix: str = "bold_locked.nii.gz",
+) -> Dict[str, Dict[str, Path]]:
+    """
+    Return voxelwise 4D paths for all subjects, keyed by task.
+
+    Returns
+    -------
+    subject_imgs : dict
+        {
+          "sub-1": {"task1": Path(...), "task2": Path(...)},
+          ...
+        }
+    """
+    root = Path(config.derivatives_dir)
+
+    if config.subjects is None:
+        subjects = iter_subjects(root)
+    else:
+        subjects = config.subjects
+
+    if tasks is None:
+        tasks = ["all"]
+
+    subject_imgs: Dict[str, Dict[str, Path]] = {}
+
+    for sub in subjects:
+        subject_imgs[sub] = {}
+        for task in tasks:
+            task_name_for_file = None if task == "all" else task
+            fpath = find_voxel_timeseries_file(config, sub=sub, task=task_name_for_file, suffix=suffix)
+            subject_imgs[sub][task] = fpath
+
+    return subject_imgs
+
 
 
 # ==== parcelwise ====
