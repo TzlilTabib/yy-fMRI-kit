@@ -1,7 +1,3 @@
-# ======================================================
-# TODO: add more visualization functions as needed
-# ======================================================
-
 import numpy as np
 from pathlib import Path
 from typing import Optional, Sequence, Union

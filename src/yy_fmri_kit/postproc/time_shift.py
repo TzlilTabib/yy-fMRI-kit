@@ -40,60 +40,12 @@ import pandas as pd
 
 from yy_fmri_kit.io.find_files import build_denoised_runs_dict
 from yy_fmri_kit.postproc.timeshift_core import get_task_from_bold_path
-from yy_fmri_kit.visualization.timeshift import plot_hrf_for_run
+from yy_fmri_kit.visualization.hrf import plot_hrf_for_run
+from yy_fmri_kit.postproc.extract_ts import extract_roi_mean_ts_from_4d, _load_niimg
 
 # Type aliases
 Array1D = np.ndarray
 PathLike = Union[str, Path]
-
-
-# ================================================================
-# 1) LOW-LEVEL HELPERS (NIfTI + ROI extraction)
-# ================================================================
-
-def _load_niimg(img: PathLike | nib.spatialimages.SpatialImage) -> nib.Nifti1Image:
-    """Convenience loader: accept path or NIfTI image."""
-    if isinstance(img, nib.spatialimages.SpatialImage):
-        return img
-    return nib.load(str(img))
-
-
-def extract_roi_mean_ts_from_4d(
-    func_img: PathLike | nib.Nifti1Image,
-    roi_mask_img: PathLike | nib.Nifti1Image,
-    mask_threshold: float = 0.5,
-) -> Array1D:
-    """
-    Extract mean time series from a 4D functional NIfTI within an ROI mask.
-
-    Returns
-    -------
-    ts : np.ndarray, shape (T,)
-        Mean ROI time series.
-    """
-    func_img = _load_niimg(func_img)
-    roi_mask_img = _load_niimg(roi_mask_img)
-
-    func_data = func_img.get_fdata()      # (X, Y, Z, T)
-    mask_data = roi_mask_img.get_fdata()  # (X, Y, Z)
-
-    if func_data.ndim != 4:
-        raise ValueError(f"func_img must be 4D, got shape {func_data.shape}")
-    if mask_data.shape != func_data.shape[:3]:
-        raise ValueError(
-            f"Mask shape {mask_data.shape} != func spatial shape {func_data.shape[:3]}"
-        )
-
-    mask = mask_data > mask_threshold
-    if not np.any(mask):
-        raise ValueError("ROI mask is empty after thresholding.")
-
-    _, _, _, T = func_data.shape
-    func_flat = func_data.reshape(-1, T)
-    mask_flat = mask.reshape(-1)
-
-    return func_flat[mask_flat].mean(axis=0)
-
 
 # ================================================================
 # 2) TASK-KEYED ORGANIZATION (critical for task selection + missing tasks)

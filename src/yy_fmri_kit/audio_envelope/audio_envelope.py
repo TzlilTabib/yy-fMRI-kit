@@ -105,31 +105,33 @@ def load_wav(path: str | Path) -> tuple[int, np.ndarray]:
 # Envelope computation
 # =========================
 
-def compute_envelope(wave: np.ndarray, sr: int, cfg: EnvelopeConfig) -> tuple[int, np.ndarray]:
-    """
-    Hilbert amplitude envelope with optional bandpass and lowpass smoothing.
-    Returns (sr_used, envelope).
-    """
+def compute_envelope(
+    wave: np.ndarray,
+    sr: int,
+    cfg: EnvelopeConfig,
+    *,
+    return_raw: bool = False,
+):
     x = wave
     sr_used = sr
 
-    # Optional resample first
     if cfg.target_sr is not None:
-        x = _resample_to_sr(x, sr, cfg.target_sr).astype(np.float64, copy=False)
+        x = _resample_to_sr(x, sr, cfg.target_sr)
         sr_used = cfg.target_sr
 
-    # Optional bandpass (e.g., speech energy)
     if cfg.speech_band is not None:
-        lo, hi = cfg.speech_band
-        x = _butter_bandpass(x, sr_used, lo, hi)
+        x = _butter_bandpass(x, sr_used, *cfg.speech_band)
 
-    env = np.abs(hilbert(x))
+    env_raw = np.abs(hilbert(x))
 
-    # Optional smoothing of envelope
+    env = env_raw
     if cfg.env_lowpass_hz is not None:
         env = _butter_lowpass(env, sr_used, cfg.env_lowpass_hz)
 
-    return sr_used, env.astype(cfg.dtype, copy=False)
+    if return_raw:
+        return sr_used, env.astype(cfg.dtype), env_raw.astype(cfg.dtype)
+    else:
+        return sr_used, env.astype(cfg.dtype)
 
 
 # =========================
@@ -212,18 +214,22 @@ def build_run_envelope(
     df_run["wav_path"] = [str(p) for p in wav_paths]
 
     clip_env = []
+    clip_env_raw = []
     sr_used: Optional[int] = None
 
     for p in wav_paths:
         sr, w = load_wav(p)
-        sr_e, env = compute_envelope(w, sr, cfg)
+        sr_e, env_smooth, env_raw = compute_envelope(
+            w, sr, cfg, return_raw=True
+        )
 
         if sr_used is None:
             sr_used = sr_e
         elif sr_e != sr_used:
             raise ValueError("Sample-rate mismatch; set cfg.target_sr to a fixed value.")
 
-        clip_env.append(env.astype(np.float32, copy=False))
+        clip_env.append(env_smooth.astype(np.float32, copy=False))
+        clip_env_raw.append(env_raw.astype(np.float32, copy=False))
 
     assert sr_used is not None
 
@@ -233,7 +239,9 @@ def build_run_envelope(
 
     n_total = int(np.ceil(run_duration_s * sr_used))
     env_run = np.zeros(n_total, dtype=np.float32)
+    env_run_raw = np.zeros(n_total, dtype=np.float32)
 
+    # Place each clip using onset/duration (preserves gaps)
     # Place each clip using onset/duration (preserves gaps)
     for i, row in df_run.iterrows():
         onset = float(row["onset_s"])
@@ -241,20 +249,34 @@ def build_run_envelope(
 
         start = int(round(onset * sr_used))
         expected_len = int(round(dur * sr_used))
-        e = clip_env[i]
 
+        e = clip_env[i]
+        r = clip_env_raw[i]
+
+        # enforce duration window for BOTH smooth and raw
         if len(e) > expected_len:
             e = e[:expected_len]
+            r = r[:expected_len]
         elif len(e) < expected_len:
-            e = np.pad(e, (0, expected_len - len(e)), mode="constant")
+            pad = expected_len - len(e)
+            e = np.pad(e, (0, pad), mode="constant")
+            r = np.pad(r, (0, pad), mode="constant")
+        else:
+            # lengths match; still ensure raw matches too
+            if len(r) > expected_len:
+                r = r[:expected_len]
+            elif len(r) < expected_len:
+                r = np.pad(r, (0, expected_len - len(r)), mode="constant")
 
-        end = min(start + len(e), n_total)
+        end = min(start + expected_len, n_total)
         if end > start:
-            env_run[start:end] = e[: end - start]
+            n = end - start
+            env_run[start:end] = e[:n]
+            env_run_raw[start:end] = r[:n]
 
     info = compute_gap_stats(df_run)
     info.update({"sr_used": int(sr_used), "run_duration_s": float(run_duration_s)})
-    return sr_used, env_run, df_run, info
+    return sr_used, env_run, env_run_raw, df_run, info
 
 # =========================
 # Multi-run orchestration (your need)
@@ -374,7 +396,7 @@ def envelopes_per_run_to_tr(
 ) -> dict[str, dict]:
     """
     Returns dict keyed by run label, each with:
-        env_tr, env_run, df_run, info
+        env_tr, env_run (smoothed), env_run_raw, df_run, info
     """
     runs = split_events_by_run(
         events_csv,
@@ -384,12 +406,13 @@ def envelopes_per_run_to_tr(
 
     out: dict[str, dict] = {}
     for run_label, df_run in runs.items():
-        sr_used, env_run, df_run_used, info = build_run_envelope(df_run, wav_dir, cfg)
+        sr_used, env_run, env_run_raw, df_run_used, info = build_run_envelope(df_run, wav_dir, cfg)
         env_tr = zscore(downsample_envelope_to_tr(env_run, sr_used, tr=tr))
 
         out[run_label] = {
             "env_tr": env_tr,
             "env_run": env_run,
+            "env_run_raw": env_run_raw,
             "df_run": df_run_used,
             "info": info,
         }
