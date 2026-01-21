@@ -357,29 +357,23 @@ def zscore(x: np.ndarray) -> np.ndarray:
 def lag_corr(x: np.ndarray, y: np.ndarray, max_lag: int) -> tuple[np.ndarray, np.ndarray]:
     """
     Correlate x and y over lags in [-max_lag, +max_lag] on the TR grid.
-    Positive lag means x is shifted forward relative to y.
+    Positive lag means x is shifted forward relative to y (y, HRF, is delayed).
     """
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    if x.shape != y.shape:
-        raise ValueError(f"x and y must have same shape. got {x.shape} vs {y.shape}")
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+    lags = np.arange(-max_lag, max_lag+1)
+    r = np.full_like(lags, np.nan, dtype=float)
 
-    lags = np.arange(-max_lag, max_lag + 1)
-    r = np.zeros_like(lags, dtype=np.float64)
-
-    for k, lag in enumerate(lags):
-        if lag < 0:
-            xs, ys = x[:lag], y[-lag:]
-        elif lag > 0:
-            xs, ys = x[lag:], y[:-lag]
+    for i, lag in enumerate(lags):
+        if lag > 0:      # x leads
+            xs, ys = x[:-lag], y[lag:]
+        elif lag < 0:    # y leads
+            xs, ys = x[-lag:], y[:lag]
         else:
             xs, ys = x, y
 
-        if xs.size < 5 or xs.std() == 0 or ys.std() == 0:
-            r[k] = np.nan
-        else:
-            r[k] = np.corrcoef(xs, ys)[0, 1]
-
+        if xs.size >= 5 and xs.std() > 0 and ys.std() > 0:
+            r[i] = np.corrcoef(xs, ys)[0, 1]
     return lags, r
 
 # =========================
@@ -418,3 +412,13 @@ def envelopes_per_run_to_tr(
         }
 
     return out
+
+# =========================
+# Padding helper if needed
+# =========================
+def pad_to_match(x, y):
+    """Pad x with zeros to match length of y."""
+    import numpy as np
+    if len(x) > len(y):
+        raise ValueError("x longer than y")
+    return np.pad(x, (0, len(y) - len(x)), mode="constant")
