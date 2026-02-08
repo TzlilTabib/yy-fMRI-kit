@@ -5,7 +5,7 @@ from typing import Optional, List
 
 
 @dataclass
-class ISCConfig:
+class ParcelISCConfig:
     """
     Minimal config for ISC analyses.
     Extend as needed later (tasks, conditions, etc.).
