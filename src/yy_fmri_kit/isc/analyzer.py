@@ -286,6 +286,7 @@ class ISCAnalyzer:
                 - alpha: significance threshold used
                 - correction: correction method used
         """
+        print(f"DEBUG: Data shape entering analyze: {data.shape}") # Should be (N, 18, Searchlights)
         self.logger.info(
             f"\n{'='*60}\n"
             f"ISC Analysis\n"
@@ -309,7 +310,7 @@ class ISCAnalyzer:
             n_permutations=n_permutations,
             random_seed=random_seed,
         )
-        
+        print(f"DEBUG: Subjectwise ISC shape: {isc_subjectwise.shape}") # Should be (N, Searchlights)
         # Summary statistics
         isc_mean = np.mean(isc_subjectwise, axis=0)
         isc_std = np.std(isc_subjectwise, axis=0, ddof=1)  # Sample std

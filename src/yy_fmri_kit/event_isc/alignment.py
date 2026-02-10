@@ -264,9 +264,18 @@ class PatternAligner:
             self.logger.info(f"\n{'#'*60}\nProcessing run: {run_type}\n{'#'*60}")
             
             # Find all NPZ files for this run
-            npz_files = sorted(
-                output_dir.rglob(f"*task-{run_type}*_{pattern_str}.npz")
-            )
+            # Find all NPZ files for this run (flexible matching for complex BIDS names)
+            all_npz = list(output_dir.rglob(f"*{pattern_str}.npz"))
+            npz_files = [f for f in all_npz if f"task-{run_type}" in f.name]
+
+            # Keep only one file per subject (in case of multiple sessions)
+            subject_files = {}
+            for f in npz_files:
+                subject = f.name.split('_')[0]  # Extract sub-XX
+                if subject not in subject_files:
+                    subject_files[subject] = f
+
+            npz_files = sorted(subject_files.values())
             
             if len(npz_files) < self.config.min_subjects:
                 self.logger.warning(

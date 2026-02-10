@@ -17,8 +17,6 @@ class ParcelISCConfig:
     desc: str = "denoised"               # matches your BOLD filename part
     space: str = "MNI152NLin2009cAsym"    
     tr: float = 1.0
-    tr: float = 2.0                       # seconds, if you need it later
-
     parcellation_dir: Optional[Path] = None # if different from derivatives_dir
     atlas_nii: Optional[str] = None         # e.g. "Schaefer2018_400Parcels7Networks"
     labels_file: Optional[Path] = None      # TSV/CSV with parcel names
