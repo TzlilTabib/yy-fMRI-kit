@@ -11,9 +11,10 @@ import numpy as np
 import pandas as pd
 from nilearn import image
 
+from scipy.spatial import cKDTree
+
 from yy_fmri_kit.event_isc.extraction.base import BasePatternExtractor
 from yy_fmri_kit.event_isc.utils import natural_sort_key, infer_run_type_from_filename
-from yy_fmri_kit.static.event_isc.config import ExtractionConfig
 
 
 class SearchlightPatternExtractor(BasePatternExtractor):
@@ -106,16 +107,26 @@ class SearchlightPatternExtractor(BasePatternExtractor):
             f"Searchlight radius: {self.config.searchlight_radius}mm "
             f"≈ {radius_voxels} voxels (voxel size: {voxel_size})"
         )
+
         
-        # NOTE: This is a simplified implementation
-        # For production, you'd want to use proper searchlight with nilearn
-        # or implement efficient voxel indexing
-        
-        self.logger.warning(
-            "Using simplified searchlight - for large datasets, "
-            "consider using nilearn.decoding.SearchLight"
-        )
-        
+        # ---------------------------------------------------------------------
+        # Precompute neighborhoods (sphere) once using KD-tree
+        # ---------------------------------------------------------------------
+        # Approx convert voxel coords -> mm coords (works for typical orthogonal affines)
+        centers_mm = centers.astype(float) * voxel_size  # ✅ CHANGE
+        tree = cKDTree(centers_mm)  # ✅ CHANGE
+
+        # neighbors[i] = indices (in centers / voxel_time_series order) within radius_mm
+        neighbors = tree.query_ball_point(centers_mm, r=self.config.searchlight_radius)  # ✅ CHANGE
+        neighbors = [np.asarray(ix, dtype=int) for ix in neighbors]  # ✅ CHANGE
+
+        if verbose:
+            neigh_sizes = np.array([len(ix) for ix in neighbors])
+            self.logger.debug(
+                f"Neighborhood size: mean={neigh_sizes.mean():.1f}, "
+                f"min={neigh_sizes.min()}, max={neigh_sizes.max()}"
+            )
+        # ---------------------------------------------------------------------
         # Extract patterns for each post
         post_patterns = {}  # post_id -> (n_searchlights,) aggregated pattern
         
@@ -130,15 +141,16 @@ class SearchlightPatternExtractor(BasePatternExtractor):
             
             # For simplified version, use the post_timeseries directly
             # In full version, you'd aggregate within searchlight spheres
-            searchlight_values = []
-            
-            # Simplified: treat each voxel as a searchlight center
-            # Real implementation would compute neighborhoods
-            for i in range(min(n_centers, n_voxels)):
-                searchlight_values.append(post_timeseries[i])
-            
-            post_patterns[post_id] = np.array(searchlight_values)
-            
+            searchlight_values = np.empty(n_centers, dtype=float)
+            for i in range(n_centers): 
+                ix = neighbors[i] 
+                if ix.size == 0:
+                    searchlight_values[i] = np.nan
+                else:
+                    searchlight_values[i] = np.mean(post_timeseries[ix])  # ✅ CHANGE
+
+            post_patterns[post_id] = searchlight_values 
+
             if verbose:
                 self.logger.debug(
                     f"Post {post_id}: {len(searchlight_values)} searchlights, "
@@ -150,7 +162,7 @@ class SearchlightPatternExtractor(BasePatternExtractor):
         return {
             "post_ids": post_ids,
             "patterns": np.vstack([post_patterns[pid] for pid in post_ids]),  # (n_posts, n_searchlights)
-            "searchlight_centers": centers[:len(searchlight_values)],  # Truncated to match
+            "searchlight_centers": centers,
             "affine": affine,
         }
     

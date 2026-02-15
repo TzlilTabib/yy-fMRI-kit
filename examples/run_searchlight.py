@@ -35,10 +35,10 @@ from yy_fmri_kit.isc.analyzer import ISCAnalyzer
 # ============================================================================
 
 # Data paths
-DATA_DIR = Path("/path/to/data/derivatives/denoised")
-EVENTS_CSV = Path("/path/to/behavioral_analyses/data/combined_events_with_bids.csv")
+DATA_DIR = Path("path/to/data/derivatives/denoised")
+EVENTS_CSV = Path("path/to/behavioral_analyses/data/combined_events_with_bids.csv")
 # Output directory
-OUTPUT_DIR = Path("/path/to/data/derivatives/searchlight")
+OUTPUT_DIR = Path("path/to/data/derivatives/searchlight")
 OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
 
 # Experiment parameters
