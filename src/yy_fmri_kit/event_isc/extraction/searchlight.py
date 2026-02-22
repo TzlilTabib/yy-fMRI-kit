@@ -10,6 +10,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from nilearn import image
+import nibabel as nib
+
 
 from scipy.spatial import cKDTree
 
@@ -65,7 +67,11 @@ class SearchlightPatternExtractor(BasePatternExtractor):
         
         # Get mask as image
         if mask_path is not None:
-            mask_img = image.load_img(str(mask_path))
+            if isinstance(mask_path, (str, Path)):
+                mask_img = image.load_img(str(mask_path))
+            else:
+                # Already a nibabel image object
+                mask_img = mask_path
         else:
             mask_img = masker.fit(img).mask_img_
         
@@ -113,12 +119,12 @@ class SearchlightPatternExtractor(BasePatternExtractor):
         # Precompute neighborhoods (sphere) once using KD-tree
         # ---------------------------------------------------------------------
         # Approx convert voxel coords -> mm coords (works for typical orthogonal affines)
-        centers_mm = centers.astype(float) * voxel_size  # ✅ CHANGE
-        tree = cKDTree(centers_mm)  # ✅ CHANGE
+        centers_mm = nib.affines.apply_affine(affine, centers)
+        tree = cKDTree(centers_mm) 
 
         # neighbors[i] = indices (in centers / voxel_time_series order) within radius_mm
-        neighbors = tree.query_ball_point(centers_mm, r=self.config.searchlight_radius)  # ✅ CHANGE
-        neighbors = [np.asarray(ix, dtype=int) for ix in neighbors]  # ✅ CHANGE
+        neighbors = tree.query_ball_point(centers_mm, r=self.config.searchlight_radius)
+        neighbors = [np.asarray(ix, dtype=int) for ix in neighbors]
 
         if verbose:
             neigh_sizes = np.array([len(ix) for ix in neighbors])
