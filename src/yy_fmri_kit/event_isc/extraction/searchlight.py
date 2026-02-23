@@ -1,9 +1,7 @@
 """
 Searchlight-based pattern extraction (preserve spatial structure).
-
-NOTE: This is a simplified implementation. For production use with large datasets,
-consider using nilearn.decoding.SearchLight with a custom estimator.
 """
+
 from pathlib import Path
 from typing import Optional
 
@@ -36,6 +34,7 @@ class SearchlightPatternExtractor(BasePatternExtractor):
         nifti_path: Path,
         events_df: pd.DataFrame,
         mask_path: Optional[Path] = None,
+        aggregation: str = "mean",  # "mean" | "median" | "vector"
         verbose: bool = False
     ) -> dict:
         """
@@ -113,7 +112,6 @@ class SearchlightPatternExtractor(BasePatternExtractor):
             f"Searchlight radius: {self.config.searchlight_radius}mm "
             f"≈ {radius_voxels} voxels (voxel size: {voxel_size})"
         )
-
         
         # ---------------------------------------------------------------------
         # Precompute neighborhoods (sphere) once using KD-tree
@@ -145,17 +143,26 @@ class SearchlightPatternExtractor(BasePatternExtractor):
             # Average BOLD across time window for this post
             post_timeseries = np.mean(voxel_time_series[start:end, :], axis=0)  # (n_voxels,)
             
-            # For simplified version, use the post_timeseries directly
-            # In full version, you'd aggregate within searchlight spheres
+            # Aggregate within each searchlight
+            # Use aggregation method (mean, median, or vector of all voxels)
             searchlight_values = np.empty(n_centers, dtype=float)
-            for i in range(n_centers): 
-                ix = neighbors[i] 
-                if ix.size == 0:
-                    searchlight_values[i] = np.nan
-                else:
-                    searchlight_values[i] = np.mean(post_timeseries[ix])  # ✅ CHANGE
+            if aggregation in ("mean", "median"):
+                agg_fn = np.mean if aggregation == "mean" else np.median
+                searchlight_values = np.empty(n_centers, dtype=float)
+                for i in range(n_centers):
+                    ix = neighbors[i]
+                    searchlight_values[i] = agg_fn(post_timeseries[ix]) if ix.size > 0 else np.nan
+                post_patterns[post_id] = searchlight_values  # (n_centers,)
 
-            post_patterns[post_id] = searchlight_values 
+            elif aggregation == "vector":
+                # Pad to max neighborhood size so output is a regular array
+                max_n = max(len(ix) for ix in neighbors)
+                searchlight_vectors = np.full((n_centers, max_n), np.nan)
+                for i in range(n_centers):
+                    ix = neighbors[i]
+                    if ix.size > 0:
+                        searchlight_vectors[i, :ix.size] = post_timeseries[ix]
+                post_patterns[post_id] = searchlight_vectors  # (n_centers, max_voxels_in_sphere)
 
             if verbose:
                 self.logger.debug(
@@ -167,7 +174,10 @@ class SearchlightPatternExtractor(BasePatternExtractor):
         
         return {
             "post_ids": post_ids,
-            "patterns": np.vstack([post_patterns[pid] for pid in post_ids]),  # (n_posts, n_searchlights)
+            "patterns": np.stack([post_patterns[pid] for pid in post_ids]),
+            # "mean"/"median" → (n_posts, n_centers)
+            # "vector"        → (n_posts, n_centers, max_voxels_in_sphere)
+            "neighbors": neighbors, # list of arrays with voxel indices for each searchlight center
             "searchlight_centers": centers,
             "affine": affine,
         }
@@ -178,6 +188,7 @@ class SearchlightPatternExtractor(BasePatternExtractor):
         events_df: pd.DataFrame,
         output_dir: Path,
         mask_path: Optional[Path] = None,
+        aggregation: str = "mean",  # "mean" | "median" | "vector"
         verbose: bool = False
     ) -> pd.DataFrame:
         """
@@ -240,7 +251,8 @@ class SearchlightPatternExtractor(BasePatternExtractor):
                         nifti_path=nifti_path,
                         events_df=run_events,
                         mask_path=mask_path,
-                        verbose=verbose
+                        verbose=verbose,
+                        aggregation=aggregation
                     )
                     
                     if not result:
@@ -262,7 +274,8 @@ class SearchlightPatternExtractor(BasePatternExtractor):
                         affine=result["affine"],
                         run_type=run_type,
                         subject=subject,
-                        # Config
+                        neighbors=np.array(result["neighbors"], dtype=object),
+                        # Config info
                         tr=self.config.tr,
                         shift_tr=self.config.shift_tr,
                         searchlight_radius=self.config.searchlight_radius,

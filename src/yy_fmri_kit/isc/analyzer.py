@@ -216,33 +216,10 @@ class ISCAnalyzer:
             return significant, corrected_p
         
         elif method == "fdr_bh":
-            # Benjamini-Hochberg FDR correction
-            sorted_indices = np.argsort(p_values)
-            sorted_p = p_values[sorted_indices]
+            from scipy.stats import false_discovery_control
             
-            # BH critical values: p(i) <= (i/n) * alpha
-            thresholds = (np.arange(1, n_features + 1) / n_features) * alpha
-            
-            # Find largest i where p(i) <= (i/n)*alpha
-            below_threshold = sorted_p <= thresholds
-            
-            if np.any(below_threshold):
-                max_i = np.where(below_threshold)[0][-1]
-                significant = np.zeros(n_features, dtype=bool)
-                significant[sorted_indices[:max_i + 1]] = True
-            else:
-                significant = np.zeros(n_features, dtype=bool)
-            
-            # Corrected p-values (BH adjustment)
-            corrected_p = np.zeros(n_features, dtype=np.float32)
-            for i in range(n_features):
-                corrected_p[sorted_indices[i]] = min(
-                    sorted_p[i] * n_features / (i + 1),
-                    1.0
-                )
-            
-            # Monotonicity enforcement (p-values should not decrease)
-            corrected_p[sorted_indices] = np.maximum.accumulate(corrected_p[sorted_indices])
+            corrected_p = false_discovery_control(p_values, method='bh').astype(np.float32)
+            significant = corrected_p < alpha
             
             self.logger.info(
                 f"FDR-BH correction (α={alpha:.3f}): "
