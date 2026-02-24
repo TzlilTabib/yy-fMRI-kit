@@ -19,9 +19,9 @@ dissimilarity matrix is shared across subjects.
 
 Usage (from a notebook)
 ------------------------
-    from parcellated_isc_rsa import Config, load_data, extract_post_patterns
-    from parcellated_isc_rsa import compute_isc, compute_rsa, permutation_test
-    from parcellated_isc_rsa import fdr_correct, results_to_dataframe
+    from parcel import Config, load_data, extract_post_patterns
+    from parcel import compute_isc, compute_rsa, permutation_test
+    from parcel import fdr_correct, results_to_dataframe
 
     cfg = Config(
         data_dir   = Path("derivatives/denoised"),
@@ -222,6 +222,8 @@ def load_timeseries(cfg: Config) -> Dict[Tuple[str, str], pd.DataFrame]:
               + (" ..." if len(missing) > 5 else ""))
 
     return ts_dict
+
+
 
 
 # ---------------------------------------------------------------------------
