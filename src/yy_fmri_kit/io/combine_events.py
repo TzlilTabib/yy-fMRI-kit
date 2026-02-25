@@ -54,6 +54,8 @@ def read_events_file(path: Path, *, run_label: str, subject: str, scan_name: str
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"{path.name} missing columns: {missing}. Found: {list(df.columns)}")
+    
+    df = df[df["stim_file"] != "n/a"].copy()
 
     events: list[Event] = []
     for _, row in df.iterrows():

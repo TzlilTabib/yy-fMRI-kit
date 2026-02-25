@@ -171,31 +171,32 @@ def load_events(cfg: Config) -> pd.DataFrame:
     # Drop fully duplicate columns (same name appearing more than once)
     df = df.loc[:, ~df.columns.duplicated()]
 
-    # Select only needed columns then rename — avoids issues with extra cols
-    needed = {
-        cfg.subject_col  : "subject",
-        cfg.run_col      : "run_type",
-        cfg.post_col     : "post_id",
-        cfg.onset_col    : "onset",
-        cfg.duration_col : "duration",
-    }
+    # Validate required columns exist
+    needed = [cfg.subject_col, cfg.run_col, cfg.post_col,
+              cfg.onset_col, cfg.duration_col]
     missing_cols = [c for c in needed if c not in df.columns]
     if missing_cols:
         raise KeyError(
             f"[load_events] Columns not found in events CSV: {missing_cols}\n"
             f"Available columns: {df.columns.tolist()}"
         )
-    df = df[list(needed.keys())].copy()
-    df = df.rename(columns=needed)
 
-    df = df[df["subject"].isin(cfg.subjects)]
-    df = df[df["run_type"].isin(cfg.run_types)]
+    # Keep all columns (no renaming) — downstream code uses cfg.*_col to access
+    df = df[df[cfg.subject_col].isin(cfg.subjects)]
+    df = df[df[cfg.run_col].isin(cfg.run_types)]
+
+    # Drop rows with missing or non-post post_id (fixation/black leftovers)
+    df = df[df[cfg.post_col].notna()]
+    df = df[df[cfg.post_col].astype(str) != "n/a"]
+    df = df[df[cfg.post_col].astype(str) != "nan"]
+    df[cfg.post_col] = df[cfg.post_col].astype(str)
+
     df = df.reset_index(drop=True)
 
     print(f"[load_events] {len(df)} events | "
-          f"{df['subject'].nunique()} subjects | "
-          f"{df['run_type'].nunique()} run types | "
-          f"{df['post_id'].nunique()} unique post IDs")
+          f"{df[cfg.subject_col].nunique()} subjects | "
+          f"{df[cfg.run_col].nunique()} run types | "
+          f"{df[cfg.post_col].nunique()} unique post IDs")
     return df
 
 
@@ -315,11 +316,13 @@ def extract_post_patterns(
     patterns: Dict[str, PostPatterns] = {}
 
     for run_type in cfg.run_types:
-        run_events = events_df[events_df["run_type"] == run_type]
-        post_ids   = sorted(run_events["post_id"].unique())
+        run_events = events_df[events_df[cfg.run_col] == run_type]
+        post_ids   = sorted(run_events[cfg.post_col].unique())
 
-        # Which subjects have a TSV for this run?
-        valid_subs = [s for s in cfg.subjects if (s, run_type) in ts_dict]
+        # Which subjects have BOTH a TSV and events for this run?
+        subs_with_events = set(run_events[cfg.subject_col].unique())
+        valid_subs = [s for s in cfg.subjects
+                      if (s, run_type) in ts_dict and s in subs_with_events]
         if len(valid_subs) < 2:
             print(f"[extract] {run_type}: skipping — only {len(valid_subs)} subjects")
             continue
@@ -332,8 +335,8 @@ def extract_post_patterns(
             for sub in valid_subs:
                 ts  = ts_dict[(sub, run_type)].values  # (n_trs, n_parcels)
                 evt = run_events[
-                    (run_events["subject"] == sub) &
-                    (run_events["post_id"] == post_id)
+                    (run_events[cfg.subject_col] == sub) &
+                    (run_events[cfg.post_col]    == post_id)
                 ]
                 if evt.empty:
                     sub_vectors.append(None)
@@ -341,7 +344,7 @@ def extract_post_patterns(
 
                 row  = evt.iloc[0]
                 trs  = _trs_for_event(
-                    row["onset"], row["duration"],
+                    row[cfg.onset_col], row[cfg.duration_col],
                     cfg.shift_tr, cfg.tr, n_trs=len(ts)
                 )
                 if len(trs) == 0:
