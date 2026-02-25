@@ -1,5 +1,5 @@
 """
-parcel.py
+parcellated_isc_rsa.py
 ======================
 Parcellated ISC and RSA for event-based fMRI data.
 
@@ -19,9 +19,9 @@ dissimilarity matrix is shared across subjects.
 
 Usage (from a notebook)
 ------------------------
-    from parcel import Config, load_data, extract_post_patterns
-    from parcel import compute_isc, compute_rsa, permutation_test
-    from parcel import fdr_correct, results_to_dataframe
+    from parcellated_isc_rsa import Config, load_data, extract_post_patterns
+    from parcellated_isc_rsa import compute_isc, compute_rsa, permutation_test
+    from parcellated_isc_rsa import fdr_correct, results_to_dataframe
 
     cfg = Config(
         data_dir   = Path("derivatives/denoised"),
@@ -57,10 +57,15 @@ __all__ = [
     "Config",
     "load_events",
     "load_timeseries",
+    "load_data",
     "extract_post_patterns",
     "compute_isc",
     "compute_rsa",
     "permutation_test",
+    "load_affiliation",
+    "make_behavioral_rdm",
+    "compute_brain_behavior_rsa",
+    "permutation_test_brain_behavior",
     "fdr_correct",
     "results_to_dataframe",
 ]
@@ -163,14 +168,25 @@ def load_events(cfg: Config) -> pd.DataFrame:
     """
     df = pd.read_csv(cfg.events_csv)
 
-    # Rename to standard internal names
-    df = df.rename(columns={
+    # Drop fully duplicate columns (same name appearing more than once)
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    # Select only needed columns then rename — avoids issues with extra cols
+    needed = {
         cfg.subject_col  : "subject",
         cfg.run_col      : "run_type",
         cfg.post_col     : "post_id",
         cfg.onset_col    : "onset",
         cfg.duration_col : "duration",
-    })
+    }
+    missing_cols = [c for c in needed if c not in df.columns]
+    if missing_cols:
+        raise KeyError(
+            f"[load_events] Columns not found in events CSV: {missing_cols}\n"
+            f"Available columns: {df.columns.tolist()}"
+        )
+    df = df[list(needed.keys())].copy()
+    df = df.rename(columns=needed)
 
     df = df[df["subject"].isin(cfg.subjects)]
     df = df[df["run_type"].isin(cfg.run_types)]
@@ -224,6 +240,29 @@ def load_timeseries(cfg: Config) -> Dict[Tuple[str, str], pd.DataFrame]:
     return ts_dict
 
 
+def load_data(
+    cfg: Config,
+) -> Tuple[pd.DataFrame, Dict[Tuple[str, str], pd.DataFrame]]:
+    """
+    Convenience wrapper: load events CSV and all timeseries TSVs in one call.
+
+    Parameters
+    ----------
+    cfg : Config
+
+    Returns
+    -------
+    events_df : pd.DataFrame  (output of load_events)
+    ts_dict   : dict          (output of load_timeseries)
+
+    Example
+    -------
+    events_df, ts_dict = load_data(cfg)
+    parcel_names = ts_dict[(cfg.subjects[0], cfg.run_types[0])].columns.tolist()
+    """
+    events_df = load_events(cfg)
+    ts_dict   = load_timeseries(cfg)
+    return events_df, ts_dict
 
 
 # ---------------------------------------------------------------------------
@@ -360,14 +399,18 @@ def compute_isc(
     data = np.stack([post_patterns[p] for p in post_ids])
 
     isc_subj = np.zeros((n_subjects, n_parcels))
+    total    = data.sum(axis=1)  # (n_posts, n_parcels)
 
     for s in range(n_subjects):
-        # Leave-one-out: mean of all other subjects, shape (n_posts, n_parcels)
-        others_mean = (data[:, :, :].sum(axis=1) - data[:, s, :]) / (n_subjects - 1)
+        target = data[:, s, :]                               # (n_posts, n_parcels)
+        others = (total - target) / (n_subjects - 1)        # (n_posts, n_parcels)
 
-        for p in range(n_parcels):
-            r = pearsonr(data[:, s, p], others_mean[:, p])[0]
-            isc_subj[s, p] = r
+        # Vectorised Pearson r across the posts dimension for all parcels at once
+        t_c = target - target.mean(axis=0)
+        o_c = others - others.mean(axis=0)
+        num = (t_c * o_c).sum(axis=0)
+        den = np.sqrt((t_c ** 2).sum(axis=0) * (o_c ** 2).sum(axis=0))
+        isc_subj[s] = np.where(den > 1e-10, num / den, 0.0)
 
     isc_mean = isc_subj.mean(axis=0)
     return isc_mean, isc_subj
@@ -461,9 +504,13 @@ def _make_rdm(patterns: np.ndarray) -> np.ndarray:
 
 def _compute_rsa_from_array(data: np.ndarray) -> np.ndarray:
     """
-    For each parcel, build each subject's RDM from their post patterns,
-    then correlate each subject's RDM with the mean RDM of all others
-    (leave-one-out), and return the group mean RSA r.
+    For each parcel, build each subject's RDM from their post-level activation
+    profile, then correlate each subject's RDM with the leave-one-out mean RDM
+    of all other subjects.
+
+    For a single parcel, each subject has a vector of length n_posts (their
+    activation to each post). The RDM is pairwise absolute differences between
+    posts — i.e. how differently did this parcel respond to each pair of posts.
 
     Parameters
     ----------
@@ -474,23 +521,39 @@ def _compute_rsa_from_array(data: np.ndarray) -> np.ndarray:
     rsa_mean : (n_parcels,)
     """
     n_posts, n_subjects, n_parcels = data.shape
+
+    # Build all RDMs at once:
+    # For each parcel p and subject s, rdms[s, p] is the upper-triangle vector
+    # of pairwise absolute differences across posts.
+    # data[:, s, p] is shape (n_posts,) — activation per post for subject s, parcel p
+    # We want pairwise |x_i - x_j| for all post pairs.
+
+    # Efficient: use broadcasting for absolute differences
+    # data shape: (n_posts, n_subjects, n_parcels)
+    # diff[i,j,s,p] = |data[i,s,p] - data[j,s,p]|
+    d = data[:, np.newaxis, :, :] - data[np.newaxis, :, :, :]  # (n_posts, n_posts, n_subs, n_parcels)
+    d = np.abs(d)
+
+    # Extract upper triangle indices
+    tri_i, tri_j = np.triu_indices(n_posts, k=1)
+    # rdms shape: (n_pairs, n_subjects, n_parcels)
+    rdms = d[tri_i, tri_j, :, :]
+    # Transpose to (n_subjects, n_parcels, n_pairs) for easier indexing
+    rdms = rdms.transpose(1, 2, 0)   # (n_subjects, n_parcels, n_pairs)
+
     rsa_subj = np.zeros((n_subjects, n_parcels))
+    rdms_sum = rdms.sum(axis=0)       # (n_parcels, n_pairs)
 
-    for p in range(n_parcels):
-        # Build RDM per subject for this parcel: (n_subjects, n_posts*(n_posts-1)/2)
-        rdms = np.stack([
-            pdist(data[:, s, p].reshape(-1, 1), metric="cityblock")
-            if n_posts == 1
-            else pdist(data[:, s, [p]], metric="correlation")
-            for s in range(n_subjects)
-        ])  # (n_subjects, n_pairs)
+    for s in range(n_subjects):
+        others = (rdms_sum - rdms[s]) / (n_subjects - 1)  # (n_parcels, n_pairs)
+        subj   = rdms[s]                                    # (n_parcels, n_pairs)
 
-        for s in range(n_subjects):
-            others_mean_rdm = (rdms.sum(axis=0) - rdms[s]) / (n_subjects - 1)
-            if rdms[s].std() < 1e-10 or others_mean_rdm.std() < 1e-10:
-                rsa_subj[s, p] = np.nan
-            else:
-                rsa_subj[s, p] = pearsonr(rdms[s], others_mean_rdm)[0]
+        # Vectorised Pearson r between subj[p] and others[p] for all parcels
+        s_c   = subj   - subj.mean(axis=1, keepdims=True)
+        o_c   = others - others.mean(axis=1, keepdims=True)
+        num   = (s_c * o_c).sum(axis=1)
+        den   = np.sqrt((s_c**2).sum(axis=1) * (o_c**2).sum(axis=1))
+        rsa_subj[s] = np.where(den > 1e-10, num / den, np.nan)
 
     return np.nanmean(rsa_subj, axis=0)
 
@@ -526,25 +589,26 @@ def compute_rsa(
     data = np.stack([post_patterns[p] for p in post_ids])  # (n_posts, n_subs, n_parcels)
     n_posts, n_subjects, n_parcels = data.shape
 
+    # Reuse the fast vectorised implementation from _compute_rsa_from_array
+    rsa_mean = _compute_rsa_from_array(data)
+
+    # Also compute per-subject values for reporting
+    d        = data[:, np.newaxis, :, :] - data[np.newaxis, :, :, :]
+    d        = np.abs(d)
+    tri_i, tri_j = np.triu_indices(n_posts, k=1)
+    rdms     = d[tri_i, tri_j, :, :].transpose(1, 2, 0)  # (n_subs, n_parcels, n_pairs)
+    rdms_sum = rdms.sum(axis=0)
+
     rsa_subj = np.zeros((n_subjects, n_parcels))
+    for s in range(n_subjects):
+        others  = (rdms_sum - rdms[s]) / (n_subjects - 1)
+        subj    = rdms[s]
+        s_c     = subj   - subj.mean(axis=1, keepdims=True)
+        o_c     = others - others.mean(axis=1, keepdims=True)
+        num     = (s_c * o_c).sum(axis=1)
+        den     = np.sqrt((s_c**2).sum(axis=1) * (o_c**2).sum(axis=1))
+        rsa_subj[s] = np.where(den > 1e-10, num / den, np.nan)
 
-    for p in range(n_parcels):
-        # Each subject's "pattern" for this parcel is a vector of length n_posts
-        # RDM = pairwise absolute difference across posts
-        parcel_data = data[:, :, p]  # (n_posts, n_subjects)
-        rdms = np.stack([
-            pdist(parcel_data[:, s].reshape(-1, 1), metric="cityblock")
-            for s in range(n_subjects)
-        ])  # (n_subjects, n_pairs)
-
-        for s in range(n_subjects):
-            others = (rdms.sum(axis=0) - rdms[s]) / (n_subjects - 1)
-            if rdms[s].std() < 1e-10 or others.std() < 1e-10:
-                rsa_subj[s, p] = np.nan
-            else:
-                rsa_subj[s, p] = pearsonr(rdms[s], others)[0]
-
-    rsa_mean = np.nanmean(rsa_subj, axis=0)
     return rsa_mean, rsa_subj
 
 
@@ -681,3 +745,255 @@ def results_to_dataframe(
             df[f"r_{sub}"] = subj_vals[i]
 
     return df
+
+
+# ---------------------------------------------------------------------------
+# Brain-behavior RSA (subject × subject)
+# ---------------------------------------------------------------------------
+
+def make_behavioral_rdm(
+    affiliation  : Dict[str, float],
+    subjects     : List[str],
+    scale_max    : float = 100.0,
+) -> np.ndarray:
+    """
+    Build a subject × subject behavioral similarity matrix from a continuous
+    political affiliation score.
+
+    Similarity = 1 - |score_i - score_j| / scale_max
+    So subjects with identical scores get similarity = 1,
+    and subjects at opposite ends get similarity = 0.
+
+    Parameters
+    ----------
+    affiliation : {subject_id: score}  scores on a 0–100 scale
+                  (0 = far right, 100 = far left)
+    subjects    : ordered list of subject IDs (must match neural data order)
+    scale_max   : maximum possible difference (default 100)
+
+    Returns
+    -------
+    beh_sim : (n_subjects, n_subjects) symmetric similarity matrix
+
+    Example
+    -------
+    affiliation = {
+        'sub-1': 20, 'sub-6': 75, 'sub-20': 45, ...
+    }
+    beh_sim = make_behavioral_rdm(affiliation, cfg.subjects)
+    """
+    n    = len(subjects)
+    sims = np.zeros((n, n))
+    for i, si in enumerate(subjects):
+        for j, sj in enumerate(subjects):
+            sims[i, j] = 1 - abs(affiliation[si] - affiliation[sj]) / scale_max
+    return sims
+
+
+def _upper_triangle(mat: np.ndarray) -> np.ndarray:
+    """Return the upper triangle (excluding diagonal) as a 1-D vector."""
+    idx = np.triu_indices(mat.shape[0], k=1)
+    return mat[idx]
+
+
+def compute_brain_behavior_rsa(
+    post_patterns : PostPatterns,
+    beh_sim       : np.ndarray,
+    subjects      : List[str],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    For each parcel, correlate the neural subject × subject similarity matrix
+    with the behavioral similarity matrix.
+
+    Neural similarity for a parcel: average each subject's pattern across all
+    posts → one vector per subject → Pearson r between every subject pair.
+
+    Parameters
+    ----------
+    post_patterns : {post_id: (n_subjects, n_parcels)}
+    beh_sim       : (n_subjects, n_subjects) from make_behavioral_rdm()
+    subjects      : ordered subject list (must match axis-0 of post_patterns arrays)
+
+    Returns
+    -------
+    rsa_r    : (n_parcels,)  Pearson r between neural and behavioral similarity
+    neural_sim : (n_subjects, n_subjects, n_parcels) neural similarity matrices
+                 (useful for visualisation)
+
+    Example
+    -------
+    beh_sim  = make_behavioral_rdm(affiliation, cfg.subjects)
+    rsa_r, neural_sim = compute_brain_behavior_rsa(
+        patterns['AntiLeft'], beh_sim, cfg.subjects)
+    """
+    post_ids   = sorted(post_patterns.keys())
+    n_subjects, n_parcels = next(iter(post_patterns.values())).shape
+
+    # data: (n_posts, n_subjects, n_parcels)
+    data = np.stack([post_patterns[p] for p in post_ids])
+
+    # Each subject's profile per parcel = activation across n_posts
+    # parcel_profiles: (n_subjects, n_posts, n_parcels)
+    parcel_profiles = data.transpose(1, 0, 2)  # (n_subjects, n_posts, n_parcels)
+
+    # Build neural similarity matrix vectorised:
+    # For each parcel, correlate every subject pair's activation profile (length n_posts)
+    # neural_sim: (n_subjects, n_subjects, n_parcels)
+    neural_sim = np.zeros((n_subjects, n_subjects, n_parcels))
+    np.fill_diagonal(neural_sim[:, :, 0], 1.0)  # placeholder, filled below
+
+    for i in range(n_subjects):
+        for j in range(i, n_subjects):
+            x = parcel_profiles[i]  # (n_posts, n_parcels)
+            y = parcel_profiles[j]  # (n_posts, n_parcels)
+            # Vectorised Pearson r across posts for all parcels at once
+            x_c = x - x.mean(axis=0)
+            y_c = y - y.mean(axis=0)
+            num = (x_c * y_c).sum(axis=0)
+            den = np.sqrt((x_c**2).sum(axis=0) * (y_c**2).sum(axis=0))
+            r   = np.where(den > 1e-10, num / den, 0.0)
+            neural_sim[i, j, :] = r
+            neural_sim[j, i, :] = r  # symmetric
+
+    # Correlate upper triangle of neural sim with behavioral sim per parcel
+    beh_vec = _upper_triangle(beh_sim)  # (n_pairs,)
+    rsa_r   = np.zeros(n_parcels)
+
+    for p in range(n_parcels):
+        neu_vec = _upper_triangle(neural_sim[:, :, p])
+        if neu_vec.std() < 1e-10 or beh_vec.std() < 1e-10:
+            rsa_r[p] = np.nan
+        else:
+            rsa_r[p] = pearsonr(neu_vec, beh_vec)[0]
+
+    return rsa_r, neural_sim
+
+
+def permutation_test_brain_behavior(
+    post_patterns : PostPatterns,
+    beh_sim       : np.ndarray,
+    subjects      : List[str],
+    cfg           : "Config",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Permutation test for brain-behavior RSA.
+
+    Shuffles subject labels on the behavioral similarity matrix to break
+    the brain-behavior correspondence while preserving the structure of each.
+
+    Parameters
+    ----------
+    post_patterns : {post_id: (n_subjects, n_parcels)}
+    beh_sim       : (n_subjects, n_subjects) behavioral similarity matrix
+    subjects      : ordered subject list
+    cfg           : Config (uses cfg.n_perms, cfg.seed)
+
+    Returns
+    -------
+    obs_r     : (n_parcels,)           observed brain-behavior RSA r
+    p_vals    : (n_parcels,)           permutation p-value
+    null_dist : (n_perms, n_parcels)   full null distribution
+
+    Example
+    -------
+    obs_r, p_vals, null = permutation_test_brain_behavior(
+        patterns['AntiLeft'], beh_sim, cfg.subjects, cfg)
+    rejected, p_fdr = fdr_correct(p_vals, cfg.fdr_q)
+    """
+    rng = np.random.default_rng(cfg.seed)
+
+    obs_r, _ = compute_brain_behavior_rsa(post_patterns, beh_sim, subjects)
+    n_parcels  = len(obs_r)
+    n_subjects = len(subjects)
+    null_dist  = np.zeros((cfg.n_perms, n_parcels))
+
+    for i in range(cfg.n_perms):
+        # Shuffle subject labels on the behavioral matrix
+        perm_idx   = rng.permutation(n_subjects)
+        beh_perm   = beh_sim[np.ix_(perm_idx, perm_idx)]
+        null_r, _  = compute_brain_behavior_rsa(post_patterns, beh_perm, subjects)
+        null_dist[i] = null_r
+
+    p_vals = np.mean(null_dist >= obs_r, axis=0)
+    return obs_r, p_vals, null_dist
+
+
+# ---------------------------------------------------------------------------
+# Load behavioral data
+# ---------------------------------------------------------------------------
+
+def load_affiliation(
+    csv_path  : Path,
+    subjects  : List[str],
+    score_col : str = "camp_support",
+    id_col    : str = "subject_num",
+) -> Dict[str, float]:
+    """
+    Load political affiliation scores from the behavioral CSV and map them
+    to BIDS subject IDs.
+
+    Handles duplicate subject entries by averaging their scores.
+
+    Parameters
+    ----------
+    csv_path  : path to the CSV (e.g. political_attitude_q_08122025.csv)
+    subjects  : list of BIDS subject IDs (e.g. ['sub-1', 'sub-6', ...])
+                subject numbers are extracted from these ('sub-6' → 6)
+    score_col : column containing the affiliation score (default 'camp_support')
+                0 = far right, 100 = far left
+    id_col    : column containing the numeric subject ID (default 'subject_num')
+
+    Returns
+    -------
+    affiliation : {'sub-N': score}  only for subjects present in both
+                  the CSV and the subjects list
+
+    Also prints a warning for any fMRI subjects missing from the CSV.
+
+    Example
+    -------
+    affiliation = load_affiliation(
+        Path("political_attitude_q_08122025.csv"),
+        subjects = cfg.subjects,
+    )
+    beh_sim = make_behavioral_rdm(affiliation, cfg.subjects)
+    """
+    csv_path = Path(csv_path)
+    df = pd.read_csv(csv_path)
+
+    # Average duplicates
+    df_agg = (
+        df.groupby(id_col)[score_col]
+        .mean()
+        .reset_index()
+    )
+
+    # Support two id_col formats:
+    #   - numeric (e.g. subject_num=6)  → match against int extracted from 'sub-6'
+    #   - string  (e.g. bids_id='sub-6') → match directly
+    sample_val = df_agg[id_col].iloc[0]
+    use_numeric = isinstance(sample_val, (int, float)) and not isinstance(sample_val, bool)
+
+    affiliation = {}
+    missing     = []
+
+    for bids_id in subjects:
+        if use_numeric:
+            key = int(bids_id.split("-")[1])
+        else:
+            key = bids_id
+        row = df_agg[df_agg[id_col] == key]
+        if row.empty:
+            missing.append(bids_id)
+        else:
+            affiliation[bids_id] = float(row[score_col].values[0])
+
+    if missing:
+        print(f"[load_affiliation] ⚠  No behavioral data for: {missing}")
+
+    print(f"[load_affiliation] Loaded scores for {len(affiliation)} subjects")
+    for sub, score in sorted(affiliation.items(),
+                              key=lambda x: int(x[0].split('-')[1])):
+        print(f"  {sub}: {score_col} = {score:.1f}")
+
+    return affiliation
