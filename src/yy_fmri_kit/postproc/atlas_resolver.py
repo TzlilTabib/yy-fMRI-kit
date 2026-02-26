@@ -88,6 +88,7 @@ def _read_labels_aligned(atlas_img: nib.Nifti1Image, labels_file: Optional[Path]
     """Read labels and align them to integer IDs present in atlas_img; fallback to generic names."""
     ids = np.unique(atlas_img.get_fdata().astype(int))
     ids = ids[ids > 0]
+    print(f"  [_read_labels_aligned] labels_file={labels_file}  exists={Path(labels_file).exists() if labels_file else 'N/A'}  n_ids={len(ids)}")
 
     if not labels_file or not Path(labels_file).exists():
         return [f"parcel-{i:03d}" for i in range(len(ids))]

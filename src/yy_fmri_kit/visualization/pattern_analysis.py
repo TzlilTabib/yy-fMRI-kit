@@ -1,5 +1,5 @@
 """
-parcellated_viz.py
+visuzalization.pattern_analysis.py
 ==================
 Visualisation functions for parcellated ISC and RSA results.
 
@@ -29,6 +29,10 @@ import matplotlib.gridspec as gridspec
 from matplotlib.colors import TwoSlopeNorm
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import sem
+from nilearn import datasets, surface, plotting
+from nilearn import datasets as nl_datasets, surface, plotting, image
+import nibabel as nib
+from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -706,3 +710,674 @@ def plot_brain_behavior_bar(
         title    = title,
         ylabel   = "Brain–behavior RSA r",
     )
+
+
+# ---------------------------------------------------------------------------
+# 11. Brain surface map — parcel r-values from a results DataFrame
+# ---------------------------------------------------------------------------
+
+def _df_to_surface_texture(
+    df          : pd.DataFrame,
+    stat_col    : str,
+    n_rois      : int,
+    hemi        : str,
+    fsaverage   : object,
+) -> np.ndarray:
+    """
+    Internal helper: maps a parcel-level stat column from a Schaefer-200
+    results DataFrame onto an fsaverage5 surface texture (per-vertex array).
+
+    Parameters
+    ----------
+    df        : results DataFrame with columns 'parcel' and stat_col
+    stat_col  : which column to project ('r', 'p_raw', etc.)
+    n_rois    : number of Schaefer parcels (200 by default)
+    hemi      : 'left' or 'right'
+    fsaverage : nilearn fsaverage5 dataset object
+
+    Returns
+    -------
+    np.ndarray of shape (n_vertices,) — vertex-level texture ready to plot
+    """
+    from nilearn import datasets as nl_datasets, surface
+
+    # --- load the Schaefer volumetric atlas and project to surface once ------
+    atlas      = nl_datasets.fetch_atlas_schaefer_2018(n_rois=n_rois, resolution_mm=1)
+    atlas_img  = atlas.maps
+    labels_raw = list(atlas.labels)
+    # decode bytes if needed (older nilearn versions)
+    labels = [l.decode() if isinstance(l, bytes) else l for l in labels_raw]
+
+    # project atlas parcellation labels to the surface
+    mesh = fsaverage.pial_left if hemi == "left" else fsaverage.pial_right
+    atlas_texture = surface.vol_to_surf(atlas_img, mesh, interpolation="nearest")
+
+    # build label → stat value lookup from the DataFrame
+    label_to_val = dict(zip(df["parcel"].values, df[stat_col].values))
+
+    # map: for each vertex, find its atlas index → label → stat value
+    texture = np.zeros(atlas_texture.shape[0], dtype=float)
+    for vert_idx, parcel_idx in enumerate(atlas_texture):
+        idx = int(parcel_idx)
+        if 1 <= idx <= len(labels):
+            lbl = labels[idx - 1]          # Schaefer labels are 1-based
+            texture[vert_idx] = label_to_val.get(lbl, 0.0)
+
+    return texture
+
+
+def plot_brain_map(
+    results_dict  : Dict[str, pd.DataFrame],
+    stat_col      : str = "r",
+    mask_nonsig   : bool = False,
+    n_rois        : int = 200,
+    cmap          : str = "RdBu_r",
+    vmin          : Optional[float] = None,
+    vmax          : Optional[float] = None,
+    symmetric_cbar: bool = True,
+    views         : List[str] = ("lateral", "medial"),
+    title_prefix  : str = "",
+) -> plt.Figure:
+    """
+    Project parcel-level RSA / ISC statistics onto fsaverage5 brain surfaces
+    and display lateral + medial views for both hemispheres, one row per
+    condition.
+
+    Works directly with the CSV files from your RSA pipeline — just load them
+    with pd.read_csv and pass as a dict.
+
+    Parameters
+    ----------
+    results_dict   : {condition_name: DataFrame}
+                     Each DataFrame must have columns: 'parcel', stat_col,
+                     and (if mask_nonsig=True) 'significant'.
+                     Parcel names must follow Schaefer-200 convention, e.g.
+                     '7Networks_LH_Default_PCC_1'.
+    stat_col       : column to visualise. Use 'r' for RSA/ISC correlation,
+                     'p_raw' for uncorrected p-values, etc.
+    mask_nonsig    : if True, set non-significant parcels (significant == 0)
+                     to NaN so they render as flat grey on the surface.
+    n_rois         : number of Schaefer parcels (default 200).
+    cmap           : matplotlib colormap name.
+    vmin, vmax     : colour scale limits. If None and symmetric_cbar=True,
+                     limits are set to ±98th-percentile |r| across all
+                     conditions so every subplot shares the same scale.
+    symmetric_cbar : if True (default), forces vmin = -vmax so that 0 is
+                     always the midpoint — appropriate for correlation values.
+    views          : surface views to render per hemisphere.
+                     Default ('lateral', 'medial') gives 4 panels per row.
+    title_prefix   : optional string prepended to each subplot title.
+
+    Returns
+    -------
+    matplotlib Figure
+
+    Notes
+    -----
+    Requires nilearn ≥ 0.10:
+        pip install nilearn
+
+    Examples
+    --------
+    # Load your 4 conditions
+    import pandas as pd
+    conditions = ['AntiLeft', 'AntiRight', 'ProLeft', 'ProRight']
+    bb_results = {c: pd.read_csv(f'{c}.csv') for c in conditions}
+
+    # Brain-behavior RSA r-values, uncorrected, symmetric colour bar
+    fig = plot_brain_map(bb_results, stat_col='r')
+    fig.savefig('brain_behavior_rsa.png', dpi=150, bbox_inches='tight')
+
+    # Same but mask non-significant parcels to grey
+    fig = plot_brain_map(bb_results, stat_col='r', mask_nonsig=True)
+
+    # Neural similarity mean r (load from the npy-derived CSVs)
+    neural_results = {c: pd.read_csv(f'{c}_neural_mean.csv') for c in conditions}
+    fig = plot_brain_map(neural_results, stat_col='r',
+                         title_prefix='Neural similarity — ')
+    """
+    from nilearn import datasets as nl_datasets, surface, plotting
+
+    conditions = list(results_dict.keys())
+    n_conds    = len(conditions)
+    n_views    = len(views)
+    hemis      = ["left", "right"]
+    n_cols     = len(hemis) * n_views          # e.g. 4 for 2 hemis × 2 views
+
+    # ── colour scale: shared across all conditions ──────────────────────────
+    if vmin is None or vmax is None:
+        all_vals = np.concatenate([
+            df[stat_col].dropna().values for df in results_dict.values()
+        ])
+        abs_max = np.percentile(np.abs(all_vals[np.isfinite(all_vals)]), 98)
+        if symmetric_cbar:
+            vmin_use = -abs_max
+            vmax_use =  abs_max
+        else:
+            vmin_use = np.percentile(all_vals[np.isfinite(all_vals)],  2)
+            vmax_use = abs_max
+    else:
+        vmin_use, vmax_use = vmin, vmax
+
+    # ── fsaverage5 surface meshes ────────────────────────────────────────────
+    fsaverage = nl_datasets.fetch_surf_fsaverage("fsaverage5")
+
+    # ── figure layout ────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(
+        n_conds, n_cols,
+        figsize=(4.0 * n_cols, 3.2 * n_conds),
+        subplot_kw={"projection": "3d"},   # nilearn needs 3-D axes
+    )
+    # normalise axes to 2-D array for uniform indexing
+    if n_conds == 1:
+        axes = axes[np.newaxis, :]
+    if n_cols == 1:
+        axes = axes[:, np.newaxis]
+
+    col_labels = [f"{h[0].upper()}H {v}" for h in hemis for v in views]
+
+    for row_i, cond in enumerate(conditions):
+        df = results_dict[cond].copy()
+
+        # optionally mask non-significant parcels
+        if mask_nonsig and "significant" in df.columns:
+            df.loc[df["significant"] == 0, stat_col] = np.nan
+
+        col_i = 0
+        for hemi in hemis:
+            bg_map = fsaverage.sulc_left if hemi == "left" else fsaverage.sulc_right
+            mesh   = fsaverage.pial_left if hemi == "left" else fsaverage.pial_right
+
+            texture = _df_to_surface_texture(df, stat_col, n_rois, hemi, fsaverage)
+
+            for view in views:
+                ax = axes[row_i, col_i]
+
+                plotting.plot_surf_stat_map(
+                    mesh,
+                    texture,
+                    hemi        = hemi,
+                    view        = view,
+                    bg_map      = bg_map,
+                    cmap        = cmap,
+                    vmin        = vmin_use,
+                    vmax        = vmax_use,
+                    colorbar    = (col_i == n_cols - 1),  # only on last column
+                    darkness    = 0.5,
+                    axes        = ax,
+                )
+
+                # column header on first row only
+                if row_i == 0:
+                    ax.set_title(col_labels[col_i], fontsize=9, pad=2)
+
+                col_i += 1
+
+        # row label (condition name) on the leftmost axis
+        axes[row_i, 0].text2D(
+            -0.08, 0.5,
+            f"{title_prefix}{cond}",
+            transform   = axes[row_i, 0].transAxes,
+            fontsize    = 10,
+            fontweight  = "bold",
+            va          = "center",
+            rotation    = 90,
+        )
+
+    fig.suptitle(
+        f"{title_prefix}{'(masked: FDR sig only)' if mask_nonsig else '(uncorrected)'}",
+        fontsize=12,
+        y=1.01,
+    )
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 12. Quick single-condition brain map (useful for inline notebook inspection)
+# ---------------------------------------------------------------------------
+
+def plot_brain_map_single(
+    df            : pd.DataFrame,
+    run_type      : str = "",
+    stat_col      : str = "r",
+    mask_nonsig   : bool = False,
+    n_rois        : int = 200,
+    cmap          : str = "RdBu_r",
+    vmin          : Optional[float] = None,
+    vmax          : Optional[float] = None,
+    symmetric_cbar: bool = True,
+) -> plt.Figure:
+    """
+    Single-condition wrapper around plot_brain_map.
+    Shows lateral + medial views for both hemispheres in one row.
+
+    Parameters
+    ----------
+    df          : results DataFrame (parcel, r, p_raw, p_fdr, significant)
+    run_type    : condition label used in the title
+    stat_col    : column to plot (default 'r')
+    mask_nonsig : grey-out parcels where significant == 0
+    n_rois      : Schaefer atlas size (default 200)
+    cmap        : colormap (default 'RdBu_r')
+    vmin, vmax  : colour limits (auto if None)
+    symmetric_cbar : centre colour bar on 0 (default True — good for r values)
+
+    Returns
+    -------
+    matplotlib Figure
+
+    Example
+    -------
+    df = pd.read_csv('AntiLeft.csv')
+    fig = plot_brain_map_single(df, run_type='AntiLeft')
+    fig.savefig('AntiLeft_brain.png', dpi=150, bbox_inches='tight')
+    """
+    return plot_brain_map(
+        results_dict   = {run_type: df},
+        stat_col       = stat_col,
+        mask_nonsig    = mask_nonsig,
+        n_rois         = n_rois,
+        cmap           = cmap,
+        vmin           = vmin,
+        vmax           = vmax,
+        symmetric_cbar = symmetric_cbar,
+        title_prefix   = "",
+    )
+
+"""
+Interactive brain map functions
+=============================================================
+
+    plot_brain_map_interactive(results_dict, ...)
+        → one nilearn interactive HTML viewer per condition, saved to disk.
+          Shows ALL parcels coloured by r-value (uncorrected view) or only
+          p-threshold-surviving parcels (thresholded view), controlled by
+          the `p_threshold` argument.
+
+    save_brain_map_html(df, run_type, output_dir, ...)
+        → thin single-condition wrapper, mirrors the style of the rest of
+          the module.
+
+"""
+
+# ── internal: build a whole-brain NIfTI from parcel-level stats ─────────────
+
+def _parcels_to_nifti(
+    df          : pd.DataFrame,
+    stat_col    : str,
+    n_rois      : int = 400,
+    p_threshold : Optional[float] = None,
+    p_col       : str = "p_raw",
+    tian_nii    : Optional[str] = None,
+) :
+    """
+    Map a parcel-level DataFrame onto a combined Schaefer + Tian NIfTI image.
+
+    Schaefer parcels are matched by label name (e.g. 7Networks_LH_Vis_1).
+    Tian parcels are matched by label name against the Tian atlas integers,
+    and placed in the same volume by filling voxels that Schaefer leaves empty.
+
+    Parameters
+    ----------
+    df          : results DataFrame with columns parcel, stat_col, p_col
+    stat_col    : column to map onto the brain
+    n_rois      : number of Schaefer parcels (default 400)
+    p_threshold : if set, zero out parcels with p_col >= p_threshold
+    p_col       : p-value column for thresholding
+    tian_nii    : path to the Tian subcortical atlas NIfTI (same MNI space).
+                  Required to visualise Tian parcels. If None, Tian parcels
+                  are silently skipped (cortex-only view).
+                  e.g. 'Tian_Subcortex_S2_MNI152_2mm.nii.gz'
+
+    Returns
+    -------
+    stat_img, thresh_img : NIfTI images on the Schaefer grid
+    """
+    from nilearn import datasets as nl_datasets
+    from nilearn.image import resample_to_img
+    import nibabel as nib
+
+    # ── Schaefer atlas ───────────────────────────────────────────────────────
+    atlas     = nl_datasets.fetch_atlas_schaefer_2018(n_rois=n_rois, resolution_mm=2)
+    atlas_img = nib.load(atlas.maps) if isinstance(atlas.maps, str) else atlas.maps
+    sch_labels = [
+        l.decode() if isinstance(l, bytes) else l
+        for l in atlas.labels
+    ]
+    combined_data = atlas_img.get_fdata().copy()   # will hold Schaefer + Tian IDs
+
+    # ── Tian atlas (optional) ────────────────────────────────────────────────
+    # Detect which parcels in the DataFrame are Tian (not in Schaefer labels)
+    sch_label_set = set(sch_labels)
+    tian_parcels  = df[~df["parcel"].isin(sch_label_set)]["parcel"].tolist()
+
+    if tian_parcels and tian_nii is not None:
+        ti_img = nib.load(str(tian_nii))
+        # Resample Tian to Schaefer grid if needed
+        if (ti_img.shape[:3] != atlas_img.shape[:3] or
+                not np.allclose(ti_img.affine, atlas_img.affine, atol=1e-3)):
+            ti_img = resample_to_img(ti_img, atlas_img, interpolation="nearest")
+        ti_data = ti_img.get_fdata()
+
+        # Tian integer IDs present in the volume (sorted)
+        ti_ids = sorted(np.unique(ti_data[ti_data > 0]).astype(int))
+
+        if len(ti_ids) != len(tian_parcels):
+            print(f"  ⚠  Tian: {len(ti_ids)} IDs in volume but "
+                  f"{len(tian_parcels)} non-Schaefer parcels in CSV — "
+                  f"mapping by position (check label order)")
+
+        # Map Tian integer → parcel name by position
+        ti_id_to_label = {tid: lbl
+                          for tid, lbl in zip(ti_ids, tian_parcels)}
+
+        # Offset Tian IDs so they don't clash with Schaefer (1-400)
+        offset = n_rois
+        for tid, lbl in ti_id_to_label.items():
+            mask = (ti_data == tid) & (combined_data == 0)   # only empty cortex voxels
+            combined_data[mask] = offset + tid
+
+    elif tian_parcels and tian_nii is None:
+        print(f"  ℹ  {len(tian_parcels)} Tian parcels in CSV but tian_nii not "
+              f"provided — subcortical parcels will be invisible. "
+              f"Pass tian_nii='path/to/Tian_atlas.nii.gz' to include them.")
+
+    # ── build label → value lookup ───────────────────────────────────────────
+    label_to_stat = dict(zip(df["parcel"].values, df[stat_col].values))
+    if p_threshold is not None and p_col in df.columns:
+        label_to_p = dict(zip(df["parcel"].values, df[p_col].values))
+    else:
+        label_to_p = {}
+
+    # ── fill stat volume ─────────────────────────────────────────────────────
+    stat_vol   = np.zeros_like(combined_data, dtype=np.float32)
+    thresh_vol = np.zeros_like(combined_data, dtype=np.float32)
+
+    # Schaefer parcels: integer 1..n_rois → sch_labels[idx-1]
+    for idx, lbl in enumerate(sch_labels, start=1):
+        mask = combined_data == idx
+        val  = label_to_stat.get(lbl, 0.0)
+        stat_vol[mask] = val
+        if p_threshold is not None:
+            thresh_vol[mask] = val if label_to_p.get(lbl, 1.0) < p_threshold else 0.0
+        else:
+            thresh_vol[mask] = val
+
+    # Tian parcels: integer (offset + tid) → label name
+    if tian_parcels and tian_nii is not None:
+        for tid, lbl in ti_id_to_label.items():
+            mask = combined_data == (offset + tid)
+            val  = label_to_stat.get(lbl, 0.0)
+            stat_vol[mask] = val
+            if p_threshold is not None:
+                thresh_vol[mask] = val if label_to_p.get(lbl, 1.0) < p_threshold else 0.0
+            else:
+                thresh_vol[mask] = val
+
+    n_mapped = (stat_vol != 0).any()
+    print(f"  [_parcels_to_nifti] Schaefer={len(sch_labels)} | "
+          f"Tian={len(tian_parcels)} | any nonzero={n_mapped}")
+
+    stat_img   = nib.Nifti1Image(stat_vol,   atlas_img.affine, atlas_img.header)
+    thresh_img = nib.Nifti1Image(thresh_vol, atlas_img.affine, atlas_img.header)
+    return stat_img, thresh_img
+
+
+# ── public API ───────────────────────────────────────────────────────────────
+
+def save_brain_map_html(
+    df          : pd.DataFrame,
+    run_type    : str,
+    output_dir  : str | Path = ".",
+    stat_col    : str = "r",
+    p_threshold : Optional[float] = None,
+    p_col       : str = "p_raw",
+    n_rois      : int = 400,
+    cmap        : str = "RdBu_r",
+    vmin        : Optional[float] = None,
+    vmax        : Optional[float] = None,
+    symmetric_cbar : bool = True,
+    open_browser: bool = False,
+    tian_nii    : Optional[str] = None,
+) -> Path:
+    """
+    Build a self-contained interactive nilearn HTML viewer for one condition
+    and save it to disk.
+
+    The HTML contains a zoomable, rotatable 3-D glass brain + slice viewer
+    coloured by `stat_col` (default: RSA r-value).  All parcels are rendered
+    by default; pass `p_threshold` to show only surviving parcels.
+
+    Parameters
+    ----------
+    df           : results DataFrame — must have columns 'parcel' and stat_col.
+                   Expects Schaefer-200 parcel names such as
+                   '7Networks_LH_Default_PCC_1'.
+    run_type     : condition name used in the HTML title and output filename.
+    output_dir   : folder where the .html file is written (created if absent).
+    stat_col     : column to visualise (default 'r').
+    p_threshold  : if given, zero-out parcels where p_col >= p_threshold before
+                   plotting, so only sub-threshold parcels are visible.
+                   E.g. p_threshold=0.05 → show only p < 0.05 (uncorrected).
+                       p_threshold=None  → show all parcels (uncorrected r map).
+    p_col        : which p-value column to threshold on (default 'p_raw').
+                   Use 'p_fdr' to threshold on FDR-corrected values.
+    n_rois       : Schaefer atlas size (default 200).
+    cmap         : diverging colormap — 'RdBu_r' keeps 0 = white/neutral.
+    vmin, vmax   : colour scale limits.  If None and symmetric_cbar=True,
+                   auto-set to ±max(|r|) across all parcels in this condition.
+    symmetric_cbar : centre the colour bar on 0 (appropriate for r-values).
+    open_browser : if True, open the saved HTML in your default browser.
+
+    Returns
+    -------
+    Path to the saved HTML file.
+
+    Examples
+    --------
+    import pandas as pd
+    from parcellated_viz import save_brain_map_html
+
+    df = pd.read_csv('AntiLeft.csv')
+
+    # Uncorrected: all parcels visible, coloured by r
+    html_path = save_brain_map_html(df, 'AntiLeft', output_dir='figures/')
+
+    # Thresholded: only parcels with p_raw < 0.05 visible
+    html_path = save_brain_map_html(df, 'AntiLeft', output_dir='figures/',
+                                     p_threshold=0.05, p_col='p_raw')
+
+    # FDR-corrected view
+    html_path = save_brain_map_html(df, 'AntiLeft', output_dir='figures/',
+                                     p_threshold=0.05, p_col='p_fdr')
+
+    # Display inline in a Jupyter notebook
+    from IPython.display import IFrame
+    IFrame(str(html_path), width=900, height=500)
+    """
+    from nilearn import plotting
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── colour limits ────────────────────────────────────────────────────────
+    if vmin is None or vmax is None:
+        vals    = df[stat_col].dropna().values
+        abs_max = float(np.percentile(np.abs(vals[np.isfinite(vals)]), 98))
+        if symmetric_cbar:
+            vmin_use, vmax_use = -abs_max, abs_max
+        else:
+            vmin_use = float(np.percentile(vals[np.isfinite(vals)], 2))
+            vmax_use = abs_max
+    else:
+        vmin_use, vmax_use = vmin, vmax
+
+    # ── build NIfTI images ───────────────────────────────────────────────────
+    stat_img, thresh_img = _parcels_to_nifti(
+        df, stat_col, n_rois, p_threshold, p_col, tian_nii=tian_nii
+    )
+
+    # ── display threshold ────────────────────────────────────────────────────
+    # nilearn requires threshold < max(|img|), and threshold > 0 so that
+    # zero-filled voxels (inter-parcel gaps) are transparent and MNI shows
+    # through. We use the minimum non-zero absolute r-value in the data,
+    # divided by 2 — this is always smaller than any real parcel value while
+    # still clearing the empty voxels between parcels.
+    nonzero_vals = df[stat_col].dropna().values
+    nonzero_vals = nonzero_vals[np.abs(nonzero_vals) > 0]
+    if len(nonzero_vals) > 0:
+        eps = float(np.abs(nonzero_vals).min()) / 2.0
+    else:
+        eps = 1e-6   # fallback: should never happen with real data
+
+    if p_threshold is not None:
+        display_img = thresh_img
+        thresh_kw   = eps
+        p_label     = f"p<{p_threshold} ({p_col})"
+    else:
+        display_img = stat_img
+        thresh_kw   = eps           # all parcels visible; gaps transparent
+        p_label     = "uncorrected (all parcels)"
+
+    title = f"RSA {stat_col} — {run_type}  [{p_label}]"
+
+    # ── nilearn interactive viewer ───────────────────────────────────────────
+    html_view = plotting.view_img(
+        display_img,
+        bg_img      = "MNI152",
+        cmap        = cmap,
+        threshold   = thresh_kw,
+        vmin        = vmin_use,
+        vmax        = vmax_use,
+        title       = title,
+        symmetric_cmap = symmetric_cbar,
+    )
+
+    # ── save ─────────────────────────────────────────────────────────────────
+    suffix    = f"_p{p_threshold}_{p_col}" if p_threshold is not None else "_uncorrected"
+    out_path  = output_dir / f"{run_type}_rsa_{stat_col}{suffix}.html"
+    html_view.save_as_html(str(out_path))
+    print(f"  Saved → {out_path}")
+
+    if open_browser:
+        import webbrowser
+        webbrowser.open(out_path.as_uri())
+
+    return out_path
+
+
+def plot_brain_map_interactive(
+    results_dict : Dict[str, pd.DataFrame],
+    output_dir   : str | Path = ".",
+    stat_col     : str = "r",
+    p_thresholds : List[Optional[float]] = (None, 0.05),
+    p_col        : str = "p_raw",
+    n_rois       : int = 400,
+    cmap         : str = "RdBu_r",
+    vmin         : Optional[float] = None,
+    vmax         : Optional[float] = None,
+    symmetric_cbar : bool = True,
+    tian_nii       : Optional[str] = None,
+) -> Dict[str, Dict[str, Path]]:
+    """
+    Batch-generate interactive HTML brain maps for all conditions and all
+    requested p-thresholds.
+
+    This is the multi-condition driver. It calls save_brain_map_html for
+    every (condition × p_threshold) combination and returns a nested dict
+    of output paths so you can embed them in a notebook or report.
+
+    Parameters
+    ----------
+    results_dict  : {condition: DataFrame}  — load with pd.read_csv()
+    output_dir    : folder for all HTML files
+    stat_col      : column to map (default 'r')
+    p_thresholds  : list of thresholds to generate.
+                    None     → all parcels shown (uncorrected colour map)
+                    0.05     → only p_col < 0.05 parcels visible
+                    [None, 0.05, 0.1] → three HTMLs per condition
+    p_col         : 'p_raw' or 'p_fdr'
+    n_rois        : Schaefer atlas size
+    cmap          : colormap
+    vmin, vmax    : colour limits (shared across all conditions if None)
+    symmetric_cbar: centre on 0
+
+    Returns
+    -------
+    {condition: {threshold_label: Path}}
+
+    Examples
+    --------
+    import pandas as pd
+    from parcellated_viz import plot_brain_map_interactive
+
+    conditions = ['AntiLeft', 'AntiRight', 'ProLeft', 'ProRight']
+    bb = {c: pd.read_csv(f'{c}.csv') for c in conditions}
+
+    # Generate: uncorrected + p<0.05 (uncorrected) for all conditions
+    paths = plot_brain_map_interactive(
+        bb,
+        output_dir   = 'figures/interactive/',
+        p_thresholds = [None, 0.05],
+        p_col        = 'p_raw',
+    )
+
+    # FDR-corrected view only
+    paths = plot_brain_map_interactive(
+        bb,
+        output_dir   = 'figures/interactive/',
+        p_thresholds = [0.05],
+        p_col        = 'p_fdr',
+    )
+
+    # Display one inline in Jupyter
+    from IPython.display import IFrame
+    IFrame(str(paths['AntiLeft'][None]), width=900, height=500)
+
+    # --- Neural similarity maps (same workflow) ---
+    neural = {c: pd.read_csv(f'{c}_neural_mean.csv') for c in conditions}
+    paths = plot_brain_map_interactive(
+        neural,
+        output_dir = 'figures/interactive/neural/',
+        p_thresholds = [None, 0.05],
+    )
+    """
+    # ── shared colour limits across all conditions ───────────────────────────
+    if vmin is None or vmax is None:
+        all_vals = np.concatenate([
+            df[stat_col].dropna().values for df in results_dict.values()
+        ])
+        finite   = all_vals[np.isfinite(all_vals)]
+        abs_max  = float(np.percentile(np.abs(finite), 98))
+        if symmetric_cbar:
+            vmin_shared, vmax_shared = -abs_max, abs_max
+        else:
+            vmin_shared = float(np.percentile(finite, 2))
+            vmax_shared = abs_max
+    else:
+        vmin_shared, vmax_shared = vmin, vmax
+
+    output_paths: Dict[str, Dict] = {}
+
+    for cond, df in results_dict.items():
+        output_paths[cond] = {}
+        print(f"\n── {cond} ──")
+        for thresh in p_thresholds:
+            path = save_brain_map_html(
+                df            = df,
+                run_type      = cond,
+                output_dir    = output_dir,
+                stat_col      = stat_col,
+                p_threshold   = thresh,
+                p_col         = p_col,
+                n_rois        = n_rois,
+                cmap          = cmap,
+                vmin          = vmin_shared,
+                vmax          = vmax_shared,
+                symmetric_cbar= symmetric_cbar,
+                tian_nii      = tian_nii,
+            )
+            output_paths[cond][thresh] = path
+
+    return output_paths

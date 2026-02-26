@@ -224,7 +224,6 @@ def parcellate_group(
 
 # ==== Private helpers ====
 # ==== Combine Schaefer + Tian parcellations into one NIfTI ====
-# TODO: still in development/testing
 def build_schaefer400_tianS3_combined_nifti(
     *,
     out_dir: Path,
@@ -243,7 +242,7 @@ def build_schaefer400_tianS3_combined_nifti(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) fetch Schaefer NIfTI dseg + labels via your resolver
+    # 1) fetch Schaefer NIfTI dseg + labels via resolver
     sch_nii, sch_lbl = resolve_atlas_and_labels(
         atlas_nii=None,
         labels_file=None,
@@ -260,8 +259,9 @@ def build_schaefer400_tianS3_combined_nifti(
     if ti_img.shape[:3] != sch_img.shape[:3] or not np.allclose(ti_img.affine, sch_img.affine):
         ti_img = resample_to_img(ti_img, sch_img, interpolation="nearest")
 
-    sch = sch_img.get_fdata().astype(int)
-    ti = ti_img.get_fdata().astype(int)
+    # Use narrow integer dtype to reduce memory and speed mask/index operations.
+    sch = np.asanyarray(sch_img.dataobj).astype(np.int32, copy=False)
+    ti = np.asanyarray(ti_img.dataobj).astype(np.int32, copy=False)
 
     # 3) merge: keep cortex labels, fill empty voxels with subcortex (+offset)
     combined = sch.copy()
@@ -269,7 +269,7 @@ def build_schaefer400_tianS3_combined_nifti(
     combined[fill] = ti[fill] + schaefer_offset
 
     combined_nii = out_dir / f"{tf_atlas}_tf_{tf_resolution}mm_{tf_desc}_plus_TianS3.dseg.nii.gz"
-    nib.save(nib.Nifti1Image(combined.astype(np.int32), sch_img.affine, sch_img.header), str(combined_nii))
+    nib.save(nib.Nifti1Image(combined, sch_img.affine, sch_img.header), str(combined_nii))
 
     # 4) build combined labels TSV
     sch_df = _load_labels_any(sch_lbl)
@@ -323,6 +323,5 @@ def _load_labels_any(path: str | Path) -> pd.DataFrame:
         if non_id:
             df = df.rename(columns={non_id[0]: "name"})
     return df
-
 
 
