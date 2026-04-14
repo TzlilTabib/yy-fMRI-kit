@@ -427,11 +427,14 @@ def permutation_test(
     """
     Permutation test for ISC or RSA.
 
-    For ISC: shuffles post labels within each subject independently to break
-    stimulus-locked structure while preserving each subject's spatial patterns.
-
-    For RSA: shuffles post labels of one subject's RDM before correlating
-    with the group-average RDM.
+    Null distribution is built via phase randomization of the post-activation
+    timeseries.  For each permutation and each subject, the FFT of the subject's
+    activation vector across posts is computed; a single set of random phase
+    shifts (uniform on [0, 2π)) is drawn and applied identically to all parcels
+    for that subject (preserving spatial covariance), then the inverse FFT
+    recovers a phase-randomized sequence with the same autocorrelation structure
+    as the original.  The DC component (post-mean) is left untouched.  The same
+    statistic as the observed value is then computed on the randomized data.
 
     Parameters
     ----------
@@ -469,12 +472,20 @@ def permutation_test(
     null_dist = np.zeros((cfg.n_perms, n_parcels))
 
     for i in range(cfg.n_perms):
-        # Shuffle post order independently per subject
-        perm_data = data.copy()
-        for s in range(n_subjects):
-            idx = rng.permutation(n_posts)
-            perm_data[:, s, :] = data[idx, s, :]
+        # Phase randomization along the posts axis.
+        # FFT: (n_posts, n_subjects, n_parcels) → (n_freq, n_subjects, n_parcels)
+        freq_data = np.fft.rfft(data, axis=0)
+        n_freq    = freq_data.shape[0]
 
+        # One random phase vector per subject; shape (n_freq-1, n_subjects, 1)
+        # broadcasts over parcels → same phases for all parcels (preserves
+        # spatial covariance).  Index 0 (DC) is left unchanged.
+        phases    = rng.uniform(0, 2 * np.pi, size=(n_freq - 1, n_subjects, 1))
+        freq_rand = freq_data.copy()
+        freq_rand[1:] *= np.exp(1j * phases)
+
+        # IFFT back; n=n_posts avoids length mismatch when n_posts is odd
+        perm_data = np.fft.irfft(freq_rand, n=n_posts, axis=0)   # (n_posts, n_subjects, n_parcels)
         perm_patterns = {post_ids[j]: perm_data[j] for j in range(n_posts)}
 
         if analysis == "isc":
