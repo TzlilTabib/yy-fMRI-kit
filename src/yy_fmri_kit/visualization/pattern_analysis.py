@@ -1138,6 +1138,7 @@ def save_brain_map_html(
     vmin        : Optional[float] = None,
     vmax        : Optional[float] = None,
     symmetric_cbar : bool = True,
+    stat_label     : Optional[str] = None,
     open_browser: bool = False,
     tian_nii    : Optional[str] = None,
 ) -> Path:
@@ -1203,12 +1204,19 @@ def save_brain_map_html(
 
     # ── colour limits ────────────────────────────────────────────────────────
     if vmin is None or vmax is None:
-        vals    = df[stat_col].dropna().values
-        abs_max = float(np.percentile(np.abs(vals[np.isfinite(vals)]), 98))
+        # For thresholded maps, base the colour scale on surviving parcel
+        # values only so the range reflects significant parcels, not all parcels.
+        if p_threshold is not None and p_col in df.columns:
+            sig_vals   = df.loc[df[p_col] < p_threshold, stat_col].dropna().values
+            limit_vals = sig_vals if len(sig_vals) > 0 else df[stat_col].dropna().values
+        else:
+            limit_vals = df[stat_col].dropna().values
+        finite  = limit_vals[np.isfinite(limit_vals)]
+        abs_max = float(np.nanmax(np.abs(finite)))
         if symmetric_cbar:
             vmin_use, vmax_use = -abs_max, abs_max
         else:
-            vmin_use = float(np.percentile(vals[np.isfinite(vals)], 2))
+            vmin_use = float(np.nanmin(finite))
             vmax_use = abs_max
     else:
         vmin_use, vmax_use = vmin, vmax
@@ -1240,9 +1248,14 @@ def save_brain_map_html(
         thresh_kw   = eps           # all parcels visible; gaps transparent
         p_label     = "uncorrected (all parcels)"
 
-    title = f"RSA {stat_col} — {run_type}  [{p_label}]"
+    label_display = stat_label if stat_label is not None else stat_col
+    label_file    = label_display.replace(" ", "_")
+    title = f"{label_display} — {run_type}  [{p_label}]"
 
     # ── nilearn interactive viewer ───────────────────────────────────────────
+    # symmetric_cmap=False: nilearn ignores vmin/vmax when symmetric_cmap=True
+    # and recomputes its own range from the data. We already applied symmetry
+    # in vmin_use/vmax_use, so pass False to make nilearn honour our limits.
     html_view = plotting.view_img(
         display_img,
         bg_img      = "MNI152",
@@ -1251,12 +1264,12 @@ def save_brain_map_html(
         vmin        = vmin_use,
         vmax        = vmax_use,
         title       = title,
-        symmetric_cmap = symmetric_cbar,
+        symmetric_cmap = False,
     )
 
     # ── save ─────────────────────────────────────────────────────────────────
     suffix    = f"_p{p_threshold}_{p_col}" if p_threshold is not None else "_uncorrected"
-    out_path  = output_dir / f"{run_type}_rsa_{stat_col}{suffix}.html"
+    out_path  = output_dir / f"{run_type}_{label_file}{suffix}.html"
     html_view.save_as_html(str(out_path))
     print(f"  Saved → {out_path}")
 
@@ -1279,6 +1292,7 @@ def plot_brain_map_interactive(
     vmax         : Optional[float] = None,
     symmetric_cbar : bool = True,
     tian_nii       : Optional[str] = None,
+    stat_label     : Optional[str] = None,
 ) -> Dict[str, Dict[str, Path]]:
     """
     Batch-generate interactive HTML brain maps for all conditions and all
@@ -1343,21 +1357,10 @@ def plot_brain_map_interactive(
         p_thresholds = [None, 0.05],
     )
     """
-    # ── shared colour limits across all conditions ───────────────────────────
-    if vmin is None or vmax is None:
-        all_vals = np.concatenate([
-            df[stat_col].dropna().values for df in results_dict.values()
-        ])
-        finite   = all_vals[np.isfinite(all_vals)]
-        abs_max  = float(np.percentile(np.abs(finite), 98))
-        if symmetric_cbar:
-            vmin_shared, vmax_shared = -abs_max, abs_max
-        else:
-            vmin_shared = float(np.percentile(finite, 2))
-            vmax_shared = abs_max
-    else:
-        vmin_shared, vmax_shared = vmin, vmax
-
+    # Colour limits: if vmin/vmax are explicitly given they are used as a
+    # shared scale across all conditions. If None (default), each condition
+    # and each threshold level auto-computes its own limits from the
+    # surviving parcel values (see save_brain_map_html for details).
     output_paths: Dict[str, Dict] = {}
 
     for cond, df in results_dict.items():
@@ -1373,9 +1376,10 @@ def plot_brain_map_interactive(
                 p_col         = p_col,
                 n_rois        = n_rois,
                 cmap          = cmap,
-                vmin          = vmin_shared,
-                vmax          = vmax_shared,
+                vmin          = vmin,
+                vmax          = vmax,
                 symmetric_cbar= symmetric_cbar,
+                stat_label    = stat_label,
                 tian_nii      = tian_nii,
             )
             output_paths[cond][thresh] = path
