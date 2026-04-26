@@ -70,6 +70,8 @@ __all__ = [
     "run_parcel_isc_postwise",
     "results_to_dataframe",
     "permutation_test",
+    "permutation_test_postwise",
+    "permutation_test_timephase_postwise",
 ]
 
 
@@ -567,7 +569,7 @@ def run_parcel_isc_postwise(
 
 
 # ---------------------------------------------------------------------------
-# Permutation test (placeholder — deferred)
+# Permutation test — Approach A placeholder (deferred)
 # ---------------------------------------------------------------------------
 
 def permutation_test(
@@ -576,52 +578,300 @@ def permutation_test(
     parcel_ids         : np.ndarray,
     n_perms            : int = 1000,
     seed               : int = 42,
-    method             : str = "post_phase_shift",
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Permutation test for per-parcel voxel-pattern ISC.
+    Permutation test for Approach A (mean-pattern ISC). NOT YET IMPLEMENTED.
 
-    NOT YET IMPLEMENTED — to be agreed with thesis supervisor.
-
-    Three candidate methods:
-    ------------------------
-    'post_phase_shift'  (recommended for event-locked data)
-        Treat each subject's 18-post sequence as a short timeseries.
-        Apply a random circular shift to the post order (independently per
-        subject), re-average to a condition pattern, recompute ISC.
-        Breaks inter-subject post correspondence while preserving each
-        subject's within-condition post-to-post structure.
-
-    'tr_phase_shift'    (gold standard for continuous ISC)
-        Circularly shift each subject's raw BOLD timeseries (before
-        post-averaging) by a random number of TRs.  Requires re-loading
-        and re-extracting from NIfTI files — computationally heavy.
-
-    'subject_label_shuffle'
-        Permute the subject-row order of the (n_subjects, n_brain_voxels)
-        matrix. Breaks inter-subject correspondence without any temporal
-        structure preservation.  Fastest; used in the ROI analysis.
-
-    Parameters
-    ----------
-    patterns            : (n_subjects, n_brain_voxels)
-    voxel_parcel_labels : (n_brain_voxels,) int32
-    parcel_ids          : (n_parcels,) int32
-    n_perms             : number of permutations
-    seed                : random seed
-    method              : one of the three methods above
-
-    Returns
-    -------
-    p_values  : (n_parcels,)
-    null_dist : (n_perms, n_parcels)
+    Approach B has a full implementation in ``permutation_test_postwise``.
 
     Raises
     ------
-    NotImplementedError : always (pending supervisor decision)
+    NotImplementedError : always
     """
     raise NotImplementedError(
-        "Permutation test deferred — method to be agreed with thesis supervisor.\n"
-        "Candidates: 'post_phase_shift', 'tr_phase_shift', 'subject_label_shuffle'.\n"
-        "See function docstring for details."
+        "Permutation test for Approach A (mean-pattern ISC) is not yet implemented.\n"
+        "Use permutation_test_postwise for Approach B (post-wise ISC)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Permutation test — Approach B (post-wise ISC, phase randomization)
+# ---------------------------------------------------------------------------
+
+def _phase_randomize_postwise(
+    patterns_per_post: np.ndarray,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Phase-randomize each subject's post sequence independently.
+
+    FFT is taken along the posts axis (axis=1).  A single set of random
+    phases is drawn per (subject, frequency) and broadcast across all
+    brain voxels — preserving spatial covariance within subjects while
+    breaking inter-subject post-level correspondence.
+
+    Parameters
+    ----------
+    patterns_per_post : (n_subjects, n_posts, n_brain_voxels)
+    rng               : numpy random generator
+
+    Returns
+    -------
+    randomized : (n_subjects, n_posts, n_brain_voxels)  real-valued
+    """
+    n_subjects, n_posts, _ = patterns_per_post.shape
+    freq   = np.fft.rfft(patterns_per_post, axis=1)   # (n_subjects, n_freq, n_brain_voxels)
+    n_freq = freq.shape[1]
+
+    # One phase per (subject, frequency), shared across voxels
+    phases = rng.uniform(0, 2 * np.pi, size=(n_subjects, n_freq - 1, 1))
+    freq_rand = freq.copy()
+    freq_rand[:, 1:, :] *= np.exp(1j * phases)        # skip DC component (index 0)
+
+    return np.fft.irfft(freq_rand, n=n_posts, axis=1) # (n_subjects, n_posts, n_brain_voxels)
+
+
+def _compute_isc_parcel_vectorized(pats_p: np.ndarray) -> float:
+    """
+    Post-wise LOO ISC for a single parcel, fully vectorized across subjects and posts.
+
+    Parameters
+    ----------
+    pats_p : (n_subjects, n_posts, n_vox)
+
+    Returns
+    -------
+    mean ISC scalar (averaged over subjects then posts)
+    """
+    n_subjects = pats_p.shape[0]
+    total   = pats_p.sum(axis=0)                                # (n_posts, n_vox)
+    others  = (total[None] - pats_p) / (n_subjects - 1)        # (n_subjects, n_posts, n_vox)
+    this_c  = pats_p  - pats_p.mean(axis=2, keepdims=True)
+    oth_c   = others  - others.mean(axis=2, keepdims=True)
+    num     = (this_c * oth_c).sum(axis=2)                      # (n_subjects, n_posts)
+    den     = np.sqrt((this_c ** 2).sum(axis=2) * (oth_c ** 2).sum(axis=2))
+    r       = np.where(den > 1e-12, num / den, 0.0)             # (n_subjects, n_posts)
+    return float(r.mean())
+
+
+def permutation_test_postwise(
+    patterns_per_post  : np.ndarray,
+    voxel_parcel_labels: np.ndarray,
+    parcel_ids         : np.ndarray,
+    n_perms            : int = 1000,
+    seed               : int = 42,
+    min_voxels         : int = 5,
+    verbose            : bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Phase-randomization permutation test for post-wise per-parcel voxel-pattern ISC.
+
+    Null distribution
+    -----------------
+    For each permutation:
+      1. For every subject independently, apply random FFT phase shifts to their
+         (n_posts,) activation sequence — one phase drawn per frequency component,
+         broadcast across all brain voxels.  This preserves each subject's spatial
+         covariance structure while destroying inter-subject post correspondence.
+      2. Inverse FFT → phase-scrambled patterns with the same spectral content.
+      3. Recompute post-wise LOO ISC for all parcels.
+
+    This directly mirrors the user-specified pipeline:
+      phase randomize → pattern per post → Pearson r across voxels per post
+      → average over posts → one null ISC per parcel
+
+    Parameters
+    ----------
+    patterns_per_post   : (n_subjects, n_posts, n_brain_voxels)
+    voxel_parcel_labels : (n_brain_voxels,) int32
+    parcel_ids          : (n_parcels,) int32
+    n_perms             : number of permutations (default 1000)
+    seed                : random seed (default 42)
+    min_voxels          : parcels with fewer voxels → NaN (default 5)
+    verbose             : print progress every 100 perms
+
+    Returns
+    -------
+    obs_isc   : (n_parcels,)          observed ISC (same as compute_parcel_isc_postwise)
+    p_values  : (n_parcels,)          one-tailed p  (proportion of null ≥ observed)
+    null_dist : (n_perms, n_parcels)  full null distribution
+    """
+    n_parcels = len(parcel_ids)
+
+    # Precompute parcel masks once — reused across all permutations
+    parcel_masks: list[np.ndarray | None] = []
+    for parcel_id in parcel_ids:
+        mask  = voxel_parcel_labels == parcel_id
+        parcel_masks.append(mask if mask.sum() >= min_voxels else None)
+
+    # Observed ISC per parcel
+    obs_isc = np.full(n_parcels, np.nan)
+    for p_idx, mask in enumerate(parcel_masks):
+        if mask is None:
+            continue
+        obs_isc[p_idx] = _compute_isc_parcel_vectorized(patterns_per_post[:, :, mask])
+
+    # Permutation loop
+    rng       = np.random.default_rng(seed)
+    null_dist = np.full((n_perms, n_parcels), np.nan)
+
+    for perm_i in range(n_perms):
+        if verbose and (perm_i + 1) % 100 == 0:
+            print(f"  Permutation {perm_i + 1}/{n_perms}")
+
+        perm_data = _phase_randomize_postwise(patterns_per_post, rng)
+
+        for p_idx, mask in enumerate(parcel_masks):
+            if mask is None:
+                continue
+            null_dist[perm_i, p_idx] = _compute_isc_parcel_vectorized(perm_data[:, :, mask])
+
+    # One-tailed p: proportion of null >= observed
+    p_values = np.full(n_parcels, np.nan)
+    valid     = ~np.isnan(obs_isc)
+    p_values[valid] = np.mean(null_dist[:, valid] >= obs_isc[valid], axis=0)
+
+    return obs_isc, p_values, null_dist
+
+
+# ---------------------------------------------------------------------------
+# Permutation test — time-domain phase randomization (rigorous)
+# ---------------------------------------------------------------------------
+
+def _extract_post_patterns_vectorized(
+    bold_data : np.ndarray,   # (n_subjects, n_trs, n_brain_voxels)
+    onset_trs : np.ndarray,   # (n_subjects, n_posts) int
+    offset_trs: np.ndarray,   # (n_subjects, n_posts) int
+) -> np.ndarray:              # (n_subjects, n_posts, n_brain_voxels)
+    """
+    Re-extract per-post patterns from a BOLD array by averaging TRs in each
+    post's window.
+
+    Vectorized across subjects for each post (assumes the window length
+    ``offset - onset`` is the same for all subjects within a given post,
+    which holds when stimulus durations are fixed and only onsets vary).
+    """
+    n_subjects, _, n_brain_voxels = bold_data.shape
+    n_posts = onset_trs.shape[1]
+    patterns = np.zeros((n_subjects, n_posts, n_brain_voxels), dtype=bold_data.dtype)
+
+    subj_idx = np.arange(n_subjects)
+
+    for p in range(n_posts):
+        # Window length for this post (same across subjects by design)
+        L = int(offset_trs[0, p] - onset_trs[0, p])
+        if L <= 0:
+            continue
+        # TR indices: (n_subjects, L)
+        tr_idx = onset_trs[:, p, None] + np.arange(L)[None, :]   # (n_subjects, L)
+        # Gather: bold_data[s, tr_idx[s], :] → (n_subjects, L, n_brain_voxels)
+        gathered = bold_data[subj_idx[:, None], tr_idx]            # (n_subjects, L, n_brain_voxels)
+        patterns[:, p, :] = gathered.mean(axis=1)
+
+    return patterns
+
+
+def permutation_test_timephase_postwise(
+    bold_data          : np.ndarray,
+    onset_trs          : np.ndarray,
+    offset_trs         : np.ndarray,
+    voxel_parcel_labels: np.ndarray,
+    parcel_ids         : np.ndarray,
+    n_perms            : int = 1000,
+    seed               : int = 42,
+    min_voxels         : int = 5,
+    verbose            : bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Time-domain phase-randomization permutation test for post-wise per-parcel
+    voxel-pattern ISC.
+
+    This is the rigorous null model: phase randomization is applied to the
+    *continuous BOLD timeseries* before pattern extraction, not to the already-
+    extracted post-level patterns.  It tests whether observed ISPC exceeds
+    what is expected given the full spectral content of the BOLD signal
+    (including HRF shape, low-frequency drift, and physiological noise).
+
+    Null distribution (per permutation)
+    ------------------------------------
+    1. For each subject independently, FFT the detrended BOLD timeseries along
+       the time axis.  Apply one random phase shift per frequency component,
+       broadcast across all brain voxels (preserving spatial covariance).
+       IFFT back → same power spectrum, randomised temporal structure.
+    2. Re-extract per-post patterns from the phase-randomised BOLD using the
+       same TR windows (onset + HRF shift) as the original extraction.
+    3. Compute post-wise LOO ISC per parcel (Pearson r across voxels).
+
+    Parameters
+    ----------
+    bold_data           : (n_subjects, n_trs, n_brain_voxels) float32/64
+                          Detrended (and optionally standardised) BOLD,
+                          produced by ``NiftiMasker.fit_transform`` with the
+                          same settings used during the original extraction.
+    onset_trs           : (n_subjects, n_posts) int
+                          Start TR of each post's window (HRF-shifted).
+    offset_trs          : (n_subjects, n_posts) int
+                          End TR (exclusive) of each post's window.
+    voxel_parcel_labels : (n_brain_voxels,) int32
+    parcel_ids          : (n_parcels,) int32
+    n_perms             : number of permutations (default 1000)
+    seed                : random seed (default 42)
+    min_voxels          : parcels with fewer voxels → NaN (default 5)
+    verbose             : print progress every 100 perms
+
+    Returns
+    -------
+    obs_isc   : (n_parcels,)          observed ISC (equals compute_parcel_isc_postwise)
+    p_values  : (n_parcels,)          one-tailed p  (proportion of null ≥ observed)
+    null_dist : (n_perms, n_parcels)  full null distribution
+    """
+    n_subjects, n_trs, _ = bold_data.shape
+    n_parcels = len(parcel_ids)
+
+    # Precompute parcel masks once
+    parcel_masks: list[np.ndarray | None] = []
+    for parcel_id in parcel_ids:
+        mask = voxel_parcel_labels == parcel_id
+        parcel_masks.append(mask if mask.sum() >= min_voxels else None)
+
+    # Observed ISC from the original (non-randomised) patterns
+    obs_patterns = _extract_post_patterns_vectorized(bold_data, onset_trs, offset_trs)
+    obs_isc = np.full(n_parcels, np.nan)
+    for p_idx, mask in enumerate(parcel_masks):
+        if mask is None:
+            continue
+        obs_isc[p_idx] = _compute_isc_parcel_vectorized(obs_patterns[:, :, mask])
+
+    # Permutation loop
+    rng       = np.random.default_rng(seed)
+    null_dist = np.full((n_perms, n_parcels), np.nan)
+
+    for perm_i in range(n_perms):
+        if verbose and (perm_i + 1) % 100 == 0:
+            print(f"  Permutation {perm_i + 1}/{n_perms}")
+
+        # Phase-randomize each subject's BOLD independently along the time axis
+        perm_bold = np.empty_like(bold_data)
+        for s in range(n_subjects):
+            freq   = np.fft.rfft(bold_data[s], axis=0)     # (n_freq, n_brain_voxels)
+            n_freq = freq.shape[0]
+            # One phase per frequency, shared across voxels
+            phases = rng.uniform(0, 2 * np.pi, size=(n_freq - 1, 1))
+            freq[1:] *= np.exp(1j * phases)                 # skip DC component
+            perm_bold[s] = np.fft.irfft(freq, n=n_trs, axis=0)
+
+        # Re-extract patterns from phase-randomised BOLD
+        perm_patterns = _extract_post_patterns_vectorized(perm_bold, onset_trs, offset_trs)
+
+        # Compute ISC per parcel
+        for p_idx, mask in enumerate(parcel_masks):
+            if mask is None:
+                continue
+            null_dist[perm_i, p_idx] = _compute_isc_parcel_vectorized(perm_patterns[:, :, mask])
+
+    # One-tailed p: proportion of null >= observed
+    p_values = np.full(n_parcels, np.nan)
+    valid     = ~np.isnan(obs_isc)
+    p_values[valid] = np.mean(null_dist[:, valid] >= obs_isc[valid], axis=0)
+
+    return obs_isc, p_values, null_dist
