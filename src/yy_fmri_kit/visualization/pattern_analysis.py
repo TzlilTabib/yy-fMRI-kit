@@ -594,6 +594,7 @@ def plot_similarity_matrices(
     parcel_idx   : int,
     parcel_name  : str = "",
     run_type     : str = "",
+    beh_label    : str = "political polarization",
 ) -> plt.Figure:
     """
     Side-by-side heatmaps of the neural similarity matrix (for one parcel)
@@ -623,7 +624,7 @@ def plot_similarity_matrices(
         axes,
         [neu,     beh_sim],
         [f"Neural similarity\n{parcel_name}  |  {run_type}",
-         "Behavioral similarity\n(political polarization)"],
+         f"Behavioral similarity\n({beh_label})"],
         ["RdBu_r", "RdBu_r"],
     ):
         vabs = max(abs(mat).max(), 0.01)
@@ -654,6 +655,7 @@ def plot_brain_behavior_scatter(
     parcel_idx  : int,
     parcel_name : str = "",
     run_type    : str = "",
+    beh_label   : str = "political polarization",
 ) -> plt.Figure:
     """
     Scatter plot of neural vs behavioral similarity (upper triangle pairs).
@@ -682,7 +684,7 @@ def plot_brain_behavior_scatter(
     ax.plot(x_line, m * x_line + b, color="#d62728",
             linewidth=1.8, label=f"r = {r:.3f}")
 
-    ax.set_xlabel("Behavioral similarity\n(political polarization)")
+    ax.set_xlabel(f"Behavioral similarity\n({beh_label})")
     ax.set_ylabel("Neural similarity (r)")
     ax.set_title(f"Brain–behavior RSA\n{parcel_name}  |  {run_type}", fontsize=10)
     ax.legend(fontsize=9)
