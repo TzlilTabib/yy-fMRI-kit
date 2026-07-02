@@ -42,6 +42,6 @@ FMRIPREP_DEFAULT_NTHREADS = 6
 FMRIPREP_DEFAULT_EXTRA = "--skip-bids-validation --low-mem --omp-nthreads 2"
 
 # Denoising Parameters
-SMOOTHING_FWHM = 2.0          # Spatial smoothing in mm
-REPETITION_TIME = 2.0         # TR in seconds
+SMOOTHING_FWHM = 6.0          # Spatial smoothing in mm
+REPETITION_TIME = 1.0         # TR in seconds
 SPIKE_CUTOFF = 3              # Cutoff for global signal and temporal derivative spikes

@@ -446,7 +446,7 @@ def compute_parcel_isc_postwise(
     voxel_parcel_labels: np.ndarray,
     parcel_ids         : np.ndarray,
     min_voxels         : int = 5,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Post-wise LOO ISC: for each post separately, compute Pearson r across voxels
     between each subject and the leave-one-out group mean.  Average across posts.
@@ -463,8 +463,9 @@ def compute_parcel_isc_postwise(
 
     Returns
     -------
-    isc_mean : (n_parcels,)              mean over subjects and posts
-    isc_subj : (n_subjects, n_parcels)   per-subject ISC (mean over posts)
+    isc_mean : (n_parcels,)                    mean over subjects and posts
+    isc_subj : (n_subjects, n_parcels)         per-subject ISC (mean over posts)
+    isc_post : (n_subjects, n_posts, n_parcels) per-subject per-post ISC
     """
     n_subjects, n_posts, _ = patterns_per_post.shape
     n_parcels = len(parcel_ids)
@@ -474,6 +475,7 @@ def compute_parcel_isc_postwise(
 
     isc_mean = np.full(n_parcels, np.nan)
     isc_subj = np.full((n_subjects, n_parcels), np.nan)
+    isc_post = np.full((n_subjects, n_posts, n_parcels), np.nan)
 
     for p_idx, parcel_id in enumerate(parcel_ids):
         mask  = voxel_parcel_labels == parcel_id
@@ -501,10 +503,11 @@ def compute_parcel_isc_postwise(
                 subj_r_per_post[i, post_i] = num / den if den > 1e-12 else 0.0
 
         subj_r = subj_r_per_post.mean(axis=1)     # (n_subjects,) — mean over posts
-        isc_mean[p_idx]    = subj_r.mean()
-        isc_subj[:, p_idx] = subj_r
+        isc_mean[p_idx]      = subj_r.mean()
+        isc_subj[:, p_idx]   = subj_r
+        isc_post[:, :, p_idx] = subj_r_per_post
 
-    return isc_mean, isc_subj
+    return isc_mean, isc_subj, isc_post
 
 
 def run_parcel_isc_postwise(
@@ -547,7 +550,7 @@ def run_parcel_isc_postwise(
         print(f"  Subjects: {n_subjects}  |  Posts: {n_posts}  "
               f"|  Brain voxels: {n_brain_voxels}  |  Parcels: {len(parcel_ids)}")
 
-        isc_mean, isc_subj = compute_parcel_isc_postwise(
+        isc_mean, isc_subj, isc_post = compute_parcel_isc_postwise(
             patterns, vox_labels, parcel_ids, min_voxels=min_voxels
         )
         n_valid = np.sum(~np.isnan(isc_mean))
@@ -557,6 +560,7 @@ def run_parcel_isc_postwise(
         results[run_type] = {
             "isc_mean"           : isc_mean,
             "isc_subj"           : isc_subj,
+            "isc_post"           : isc_post,
             "parcel_ids"         : parcel_ids,
             "parcel_names"       : parcel_names,
             "voxel_parcel_labels": vox_labels,
